@@ -12,14 +12,20 @@ import java.util.List;
 import static org.gamboni.tech.web.js.JavaScript.literal;
 import static org.gamboni.tech.web.ui.Html.*;
 
-@RequiredArgsConstructor
 public class DirectoryPage extends AbstractPage {
 
     private final MServerController controller;
     private final Style style;
     private final Script script;
 
-    public final IdentifiedElement progress = setId("progress").to(div());
+    public final IdentifiedElement progress;
+
+    public DirectoryPage(MServerController controller, Style style, Script script) {
+        this.controller = controller;
+        this.style = style;
+        this.script = script;
+        progress= setId("progress").to(div(List.of(style.progress)));
+    }
     public final IdentifiedElement status = setId("status").to(p(escape("Loading…")));
 
     public String render(String relativePath, Iterable<Item> files) {

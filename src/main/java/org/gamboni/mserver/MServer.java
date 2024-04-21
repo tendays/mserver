@@ -46,13 +46,16 @@ public class MServer {
 	private final File folder;
 
 	private final DirectoryPage page;
+	private final MServerSocket socketHandler;
 	
 	public MServer(File folder, List<String> extraParams) {
 		this.folder = folder;
 		Spark.port(4568);
 
 		Spark.exception(Exception.class, (ex, req, res) -> log.error("Uncaught Exception", ex));
-		
+
+		// WARN: web socket creation must be done before any route, so this must come first
+		this.socketHandler = new MServerSocket();
 		this.controller = new MServerController(this, folder, extraParams);
 		this.script = new Script(controller);
 		this.style = new Style();

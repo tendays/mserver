@@ -3,10 +3,12 @@ package org.gamboni.mserver.ui;
 import lombok.RequiredArgsConstructor;
 import lombok.Setter;
 import org.gamboni.mserver.MServerController;
+import org.gamboni.mserver.MServerSocket;
 import org.gamboni.mserver.data.JsStatusDTO;
 import org.gamboni.mserver.tech.AbstractController;
 import org.gamboni.tech.web.js.JavaScript;
 import org.gamboni.tech.web.js.JavaScript.Fun;
+import org.gamboni.tech.web.js.JsPersistentWebSocket;
 import org.gamboni.tech.web.ui.AbstractPage;
 import org.gamboni.tech.web.ui.AbstractScript;
 import spark.Spark;
@@ -15,6 +17,18 @@ import static org.gamboni.tech.web.js.JavaScript.*;
 
 public class Script extends AbstractScript {
     private final MServerController controller;
+
+    private final JsPersistentWebSocket socket = new JsPersistentWebSocket(MServerSocket.PATH) {
+        @Override
+        protected JsExpression helloString() {
+            return literal("connect");
+        }
+
+        @Override
+        protected JsStatement handleEvent(JsExpression message) {
+            return JsStatement.of(consoleLog(message));
+        }
+    };
 
     public final Fun showStatus = new Fun("showStatus");
 
