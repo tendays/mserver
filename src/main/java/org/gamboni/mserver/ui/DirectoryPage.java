@@ -1,6 +1,5 @@
 package org.gamboni.mserver.ui;
 
-import lombok.RequiredArgsConstructor;
 import org.gamboni.mserver.MServerController;
 import org.gamboni.mserver.data.Item;
 import org.gamboni.tech.web.ui.AbstractPage;
@@ -24,7 +23,7 @@ public class DirectoryPage extends AbstractPage {
         this.controller = controller;
         this.style = style;
         this.script = script;
-        progress= setId("progress").to(div(List.of(style.progress)));
+        this.progress = setId("progress").to(div(List.of(style.progress)));
     }
     public final IdentifiedElement status = setId("status").to(p(escape("Loading…")));
 

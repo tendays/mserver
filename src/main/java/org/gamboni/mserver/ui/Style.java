@@ -1,25 +1,16 @@
 package org.gamboni.mserver.ui;
 
-import org.gamboni.tech.web.ui.Css;
-import spark.Spark;
+import org.gamboni.mserver.tech.SparkStyle;
 
-public class Style extends Css {
+public class Style extends SparkStyle {
     public ClassName top;
     public ClassName progressBar;
     public ClassName progress;
     public ClassName grid;
     public ClassName item;
-
     public ClassName thumb;
 
     private static final String topHeight = "6em";
-
-    public Style() {
-        Spark.get(getUrl(), (req, res) -> {
-            res.header("Content-Type", getMime());
-            return this.render();
-        });
-    }
 
     @Override
     public String render() {

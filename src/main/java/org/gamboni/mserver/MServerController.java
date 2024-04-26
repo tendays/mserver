@@ -3,25 +3,21 @@
  */
 package org.gamboni.mserver;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
+import com.google.common.base.Joiner;
+import com.google.common.collect.ImmutableList;
+import org.gamboni.mserver.data.Item;
+import org.gamboni.mserver.data.PlayState;
+import org.gamboni.mserver.data.Status;
+import org.gamboni.mserver.tech.AbstractController;
+import org.gamboni.tech.web.js.JavaScript.JsExpression;
+
+import java.io.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
-import org.gamboni.mserver.data.Item;
-
-import com.google.common.base.Joiner;
-import com.google.common.collect.ImmutableList;
-import org.gamboni.mserver.data.StatusDTO;
-import org.gamboni.mserver.tech.AbstractController;
-import org.gamboni.tech.web.js.JavaScript.JsExpression;
 
 /**
  * @author tendays
@@ -50,14 +46,14 @@ public class MServerController extends AbstractController {
 			OutputStream out = mplayer.getOutputStream();
 			out.write(' ');
 			out.flush();
-			updateStatus(s -> new Status(s.nowPlaying, !s.paused, s.position, s.length, s.time));
+			updateStatus(s -> new Status(s.nowPlaying(), s.state().togglePaused(), s.position(), s.duration(), s.time()));
 		}
-		return status();
+		return status;
 	});
 	
 	public final JsExpression stop = service("stop", () -> {
 		stop();
-		return status();
+		return status;
 	});
 
 	private void stop() throws IOException {
@@ -70,7 +66,7 @@ public class MServerController extends AbstractController {
 		}
 	}
 	
-	public final CallbackServiceProxy getStatus = getService("status", () -> status());
+	public final CallbackServiceProxy getStatus = getService("status", () -> status);
 	
 	public MServerController(MServer owner, File folder, List<String> extraPlayerArgs) {
 		this.owner = owner;
@@ -137,7 +133,7 @@ public class MServerController extends AbstractController {
 	}
 
 	private void startStatusThread(String fileName) {
-		status = new Status(fileName, false, 0, 0, "00:00.0");
+		status = new Status(fileName, PlayState.UNKNOWN, 0, 0, "00:00.0");
 		new Thread(() -> {
 			BufferedReader r = null;
 			try {
@@ -158,8 +154,8 @@ public class MServerController extends AbstractController {
 					Matcher m = STATUS_LINE.matcher(line);
 					if (m.matches()) {
 						updateStatus(s -> new Status(
-								s.nowPlaying,
-								s.paused,
+								s.nowPlaying(),
+								s.state(),
 								Double.parseDouble(m.group(1)),
 								Double.parseDouble(m.group(3)),
 								m.group(2)));
@@ -212,17 +208,5 @@ public class MServerController extends AbstractController {
 
 	public JsExpression play(JsExpression param) {
 		return play.call(param);
-	}
-
-	private StatusDTO status() {
-		Status copy = this.status;
-		if (copy == null) { return status("ready", 0); }
-		return status(
-			(copy.paused ? "paused " : "playing ") + copy.time,
-			(copy.length > 0 ? copy.position / copy.length * 100 : 0));
-	}
-	
-	private StatusDTO status(String text, double progress) {
-		return new StatusDTO(text, progress +"%");
 	}
 }
