@@ -6,6 +6,7 @@ import org.gamboni.tech.web.ui.AbstractPage;
 import org.gamboni.tech.web.ui.Html;
 import org.gamboni.tech.web.ui.IdentifiedElement;
 
+import java.io.File;
 import java.util.List;
 
 import static org.gamboni.tech.web.js.JavaScript.literal;
@@ -24,6 +25,8 @@ public class DirectoryPage extends AbstractPage {
         this.style = style;
         this.script = script;
         this.progress = setId("progress").to(div(List.of(style.progress)));
+
+        script.setPage(this);
     }
     public final IdentifiedElement status = setId("status").to(p(escape("Loading…")));
 
@@ -40,7 +43,7 @@ public class DirectoryPage extends AbstractPage {
                         ul(style.grid, files, style.item, file -> box(relativePath, file))
                 )
         )
-                .onLoad(script.showStatus.invoke())
+                .onLoad(script.doOnLoad())
                 .toString();
     }
 
@@ -60,8 +63,12 @@ public class DirectoryPage extends AbstractPage {
     }
 
     private Html thumb(Item item) {
-        return item.getThumbnailPath()
-                .map(path -> img(style.thumb, path))
-                .orElse(Html.EMPTY);
+        File thumbPath = new File(item.file +".jpeg");
+        if (thumbPath.exists()) {
+            return img(style.thumb, ("./"+ item.name +".jpeg"));
+        } else {
+            return Html.EMPTY;
+        }
+
     }
 }

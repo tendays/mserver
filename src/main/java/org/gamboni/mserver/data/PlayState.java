@@ -1,7 +1,7 @@
 package org.gamboni.mserver.data;
 
 public enum PlayState {
-    UNKNOWN,
+    LOADING,
     STOPPED,
     PLAYING,
     PAUSED;

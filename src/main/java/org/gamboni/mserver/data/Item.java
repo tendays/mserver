@@ -3,12 +3,10 @@
  */
 package org.gamboni.mserver.data;
 
-import java.io.File;
-import java.util.Optional;
-
 import com.google.common.collect.ImmutableList;
 import org.gamboni.mserver.MServer;
-import org.gamboni.tech.web.ui.Html;
+
+import java.io.File;
 
 /**
  * @author tendays
@@ -49,18 +47,4 @@ public class Item {
 		return file.isDirectory();
 	}
 
-	public Optional<String> getThumbnailPath() {
-		File thumbPath = new File(file +".jpeg");
-		if (thumbPath.exists()) {
-			MServer.PathOrError<String> poe = owner.relativePath(thumbPath);
-			if (poe.error != null) {
-				return Optional.empty();
-			}
-
-			return Optional.of(poe.path);
-		} else {
-			return Optional.empty();
-		}
-
-	}
 }

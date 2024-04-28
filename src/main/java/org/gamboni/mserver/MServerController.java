@@ -28,9 +28,10 @@ public class MServerController extends AbstractController {
 	private final MServer owner;
 	final File folder;
 	private final ImmutableList<String> extraPlayerArgs;
-	private Process mplayer;
-	private volatile Status status;
-	
+	private Process mplayer; // TODO Optional
+	private final MServerSocket socketHandler;
+	private volatile Status status = Status.STOPPED;
+
 	private final List<Item> queue = new ArrayList<>();
 	/** If not null, contains the folder from which to get a random next item to auto-play. */
 	private File shuffleFolder = null;
@@ -40,7 +41,7 @@ public class MServerController extends AbstractController {
 	// mplayer  -vc dummy -vo null -noconsolecontrols  -really-quiet -vo null -ao pulse::1
 	private final ServiceProxy play;
 	private final ServiceProxy shuffle;
-	
+
 	public final JsExpression pause = service("pause", () -> {
 		if (isRunning()) {
 			OutputStream out = mplayer.getOutputStream();
@@ -50,7 +51,7 @@ public class MServerController extends AbstractController {
 		}
 		return status;
 	});
-	
+
 	public final JsExpression stop = service("stop", () -> {
 		stop();
 		return status;
@@ -65,14 +66,14 @@ public class MServerController extends AbstractController {
 			shuffleFolder = null;
 		}
 	}
-	
-	public final CallbackServiceProxy getStatus = getService("status", () -> status);
-	
-	public MServerController(MServer owner, File folder, List<String> extraPlayerArgs) {
+
+	public MServerController(MServer owner, MServerSocket socketHandler, File folder, List<String> extraPlayerArgs) {
 		this.owner = owner;
+		this.socketHandler = socketHandler;
 		this.folder = folder;
 		this.extraPlayerArgs = ImmutableList.copyOf(extraPlayerArgs);
-		
+		socketHandler.setController(this);
+
 		this.play = service("play", fileName -> {
 			synchronized (this) {
 				Item item = new Item(owner, new File(folder, fileName));
@@ -86,7 +87,7 @@ public class MServerController extends AbstractController {
 			}
 			return "ok";
 		});
-		
+
 		this.shuffle = service("shuffle", folderName -> {
 			synchronized (this) {
 				if (isRunning()) {
@@ -106,7 +107,7 @@ public class MServerController extends AbstractController {
 			}
 		});
 	}
-	
+
 	private Optional<Item> shuffleOne() throws IOException {
 		File[] files = shuffleFolder.listFiles(file -> new Item(owner, file).isMusic());
 		if (files == null || files.length == 0) {
@@ -133,7 +134,7 @@ public class MServerController extends AbstractController {
 	}
 
 	private void startStatusThread(String fileName) {
-		status = new Status(fileName, PlayState.UNKNOWN, 0, 0, "00:00.0");
+		this.updateStatus(__ -> new Status(fileName, PlayState.PLAYING, 0, 0, "00:00.0"));
 		new Thread(() -> {
 			BufferedReader r = null;
 			try {
@@ -172,7 +173,7 @@ public class MServerController extends AbstractController {
 	}
 
 	/** Pop the next item from the queue, if any, and play it.
-	 * 
+	 *
 	 * @return true if an item was popped, false if the queue was empty
 	 * @throws IOException
 	 */
@@ -183,7 +184,7 @@ public class MServerController extends AbstractController {
 		} else if (shuffleFolder != null && shuffleOne().isPresent()) {
 			return true;
 		} else {
-			status = null;
+			updateStatus(__ -> Status.STOPPED);
 			return false;
 		}
 	}
@@ -202,8 +203,23 @@ public class MServerController extends AbstractController {
 		return (mplayer != null);
 	}
 
-	private synchronized void updateStatus(UnaryOperator<Status> op) {
-		status = op.apply(status);
+	private void updateStatus(UnaryOperator<Status> op) {
+		Status oldState, newState;
+		synchronized (this) {
+			oldState = status;
+			status = op.apply(status);
+			newState = status;
+		}
+		if (oldState.state() != newState.state() ||
+				// when starting a new item duration switches from 0 to actual value;
+				// we want to notify the front ends at that time
+				oldState.duration() != newState.duration()) {
+			socketHandler.broadcastState(newState);
+		}
+	}
+
+	public Status getCurrentStatus() {
+		return this.status;
 	}
 
 	public JsExpression play(JsExpression param) {

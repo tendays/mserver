@@ -3,25 +3,20 @@
  */
 package org.gamboni.mserver;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.util.Arrays;
-import java.util.Comparator;
-import java.util.List;
-import java.util.Optional;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
-
+import com.google.common.io.ByteStreams;
 import lombok.extern.slf4j.Slf4j;
 import org.gamboni.mserver.data.Item;
-
-import com.google.common.io.ByteStreams;
-
 import org.gamboni.mserver.ui.DirectoryPage;
 import org.gamboni.mserver.ui.Script;
 import org.gamboni.mserver.ui.Style;
 import spark.Response;
 import spark.Spark;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.util.Comparator;
+import java.util.List;
+import java.util.stream.Stream;
 
 import static java.util.Arrays.asList;
 
@@ -56,42 +51,49 @@ public class MServer {
 
 		// WARN: web socket creation must be done before any route, so this must come first
 		this.socketHandler = new MServerSocket();
-		this.controller = new MServerController(this, folder, extraParams);
+		this.controller = new MServerController(this, socketHandler, folder, extraParams);
+
 		this.script = new Script(controller);
 		this.style = new Style();
 		this.page = new DirectoryPage(controller, style, script);
-		script.setPage(page);
 	}
 	
 	private void run() {
-		Spark.get("/*", (req, res) -> {
+		Spark.redirect.get("/", "/browse/");
+
+		Spark.get("/browse/*", (req, res) -> {
 			File childFolder = (req.splat().length == 0) ? folder : new File(folder, req.splat()[0]);
 			PathOrError<String> poe = relativePath(childFolder);
 			if (poe.error != null) {
 				return notFound(res, poe.error);
 			}
-			String relativePath = poe.path +
-					(poe.path.isEmpty() ? "" : File.separator);
 			
 			if (childFolder.isFile()) {
 				ByteStreams.copy(new FileInputStream(childFolder), res.raw().getOutputStream());
 				return null;
 			}
-			
-			File[] files = childFolder.listFiles();
-			if (files == null) {
-				return notFound(res, "Could not list files under "+ childFolder);
-			}
-			res.header("Content-Security-Policy", "default-src * 'unsafe-inline' 'unsafe-eval'; script-src * 'unsafe-inline' 'unsafe-eval'; connect-src * 'unsafe-inline'; img-src * data: blob: 'unsafe-inline'; frame-src *; style-src * 'unsafe-inline';");
-			return page.render(
-					relativePath,
-					Stream.of(files)
-					.sorted(Comparator.comparing(file -> file.getName().toLowerCase()))
-							.map(file -> new Item(this, file))
-							.toList());
+
+			return servePage(res, childFolder);
 		});
 	}
-	
+
+	private String servePage(Response res, File childFolder) {
+		PathOrError<String> poe = relativePath(childFolder);
+		String relativePath = poe.path +
+				(poe.path.isEmpty() ? "" : File.separator);
+		File[] files = childFolder.listFiles();
+		if (files == null) {
+			return notFound(res, "Could not list files under " + childFolder);
+		}
+		res.header("Content-Security-Policy", "default-src * 'unsafe-inline' 'unsafe-eval'; script-src * 'unsafe-inline' 'unsafe-eval'; connect-src * 'unsafe-inline'; img-src * data: blob: 'unsafe-inline'; frame-src *; style-src * 'unsafe-inline';");
+		return page.render(
+				relativePath,
+				Stream.of(files)
+						.sorted(Comparator.comparing(file -> file.getName().toLowerCase()))
+						.map(file -> new Item(this, file))
+						.toList());
+	}
+
 	public PathOrError<String> relativePath(File file) {
 		if (!file.getPath().startsWith(folder.getPath())) {
 			return PathOrError.error("Requested "+ file.getPath() +" does not start from root "+ folder.getPath());

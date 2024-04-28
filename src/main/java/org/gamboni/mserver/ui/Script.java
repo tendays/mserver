@@ -16,7 +16,7 @@ import static org.gamboni.tech.web.js.JavaScript.*;
 public class Script extends SparkScript {
     private final MServerController controller;
 
-    private final JsGlobal status = new JsGlobal("status");
+    private final JsGlobal playState = new JsGlobal("playState");
 
     // can't be set at construction time because of circularity: the page also needs to inject the script...
     @Setter
@@ -27,7 +27,7 @@ public class Script extends SparkScript {
     private final JsPersistentWebSocket socket = new JsPersistentWebSocket(MServerSocket.PATH) {
         @Override
         protected JsExpression helloString() {
-            return literal("getStatus");
+            return literal(MServerSocket.GET_STATUS);
         }
 
         @Override
@@ -35,34 +35,51 @@ public class Script extends SparkScript {
             var payload = new JsStatus(message);
             // NOTE: should call setStatus, but then should first cancel the existing
             // setTimeout (or, alternatively, call a setStatus which doesn't do a setTimeout)
-            return status.set(JsFrontEndState.literal(
+            return playState.set(JsFrontEndState.literal(
                     payload.state(),
-                    getTime().minus(payload.position()),
+                    payload.position(),
+                    getTime().divide(1000).minus(payload.position()),
                     payload.duration()
             ));
         }
     };
 
+    public JsStatement doOnLoad() {
+        return
+                seq(socket.poll(),
+                        showStatus.invoke());
+    }
+
     @Override
     public String render() {
         // to easily access properties
-        var typedStatus = new JsFrontEndState(this.status);
-
+        var typedStatus = new JsFrontEndState(this.playState);
         return controller.getJavascript() +
-                this.status.declare(JsFrontEndState.literal(
-                        literal(PlayState.UNKNOWN),
+                socket.declare() +
+                this.playState.declare(JsFrontEndState.literal(
+                        literal(PlayState.LOADING),
+                        literal(0),
                         literal(0),
                         literal(0))) +
                 showStatus.declare(() ->
                         seq(
                                 page.status.find().setInnerHtml(typedStatus.state()),
-                                page.progress.find().style().dot("width")
-                                        .set(
-                                                getTime().minus(typedStatus.started())
+                                _if(typedStatus.state().eq(literal(PlayState.PLAYING)),
+                                        setProgressBarPercent(getTime().divide(1000).minus(typedStatus.playStarted())
+                                                .times(100)
+                                                .divide(typedStatus.duration())))
+                                        ._elseIf(typedStatus.state().eq(literal(PlayState.PAUSED)),
+                                                setProgressBarPercent(typedStatus.pausedPosition()
                                                         .times(100)
-                                                        .divide(typedStatus.duration())
-                                                        .plus("%")),
+                                                        .divide(typedStatus.duration()))
+                                                )
+                                        ._else(setProgressBarPercent(literal(0))),
                                 setTimeout(showStatus.invoke(), 1000)
                         ));
+    }
+
+    private JsStatement setProgressBarPercent(JsExpression value) {
+        return page.progress.find().style().dot("width")
+                .set(value.plus("%"));
     }
 }

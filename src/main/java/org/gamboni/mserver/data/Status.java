@@ -8,4 +8,12 @@ public record Status(
 	PlayState state,
 	double position,
 	double duration,
-	String time) {}
+	String time) {
+
+	public static final Status STOPPED = new Status(
+			"",
+			PlayState.STOPPED,
+			0,
+			0,
+			"");
+}
