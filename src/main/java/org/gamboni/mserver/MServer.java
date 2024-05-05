@@ -3,7 +3,6 @@
  */
 package org.gamboni.mserver;
 
-import com.google.common.io.ByteStreams;
 import lombok.extern.slf4j.Slf4j;
 import org.gamboni.mserver.data.Item;
 import org.gamboni.mserver.ui.DirectoryPage;
@@ -53,7 +52,7 @@ public class MServer {
 		this.socketHandler = new MServerSocket();
 		this.controller = new MServerController(this, socketHandler, folder, extraParams);
 
-		this.script = new Script(controller);
+		this.script = new Script(controller, socketHandler);
 		this.style = new Style();
 		this.page = new DirectoryPage(controller, style, script);
 	}
@@ -69,7 +68,10 @@ public class MServer {
 			}
 			
 			if (childFolder.isFile()) {
-				ByteStreams.copy(new FileInputStream(childFolder), res.raw().getOutputStream());
+				try (var in = new FileInputStream(childFolder)) {
+					in.transferTo(res.raw().getOutputStream());
+					res.raw().flushBuffer();
+				}
 				return null;
 			}
 
