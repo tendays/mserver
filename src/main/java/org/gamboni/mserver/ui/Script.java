@@ -3,9 +3,7 @@ package org.gamboni.mserver.ui;
 import lombok.Setter;
 import org.gamboni.mserver.MServerController;
 import org.gamboni.mserver.MServerSocket;
-import org.gamboni.mserver.data.JsFrontEndState;
-import org.gamboni.mserver.data.JsStatus;
-import org.gamboni.mserver.data.PlayState;
+import org.gamboni.mserver.data.*;
 import org.gamboni.tech.sparkjava.SparkScript;
 import org.gamboni.tech.web.js.JsPersistentWebSocket;
 
@@ -13,9 +11,10 @@ import static org.gamboni.tech.web.js.JavaScript.*;
 
 public class Script extends SparkScript {
     private final MServerController controller;
-    private final MServerSocket serverSocket;
 
     private final JsGlobal playState = new JsGlobal("playState");
+    private final JsGlobal directory = new JsGlobal("directory");
+    private final JsGlobal stamp = new JsGlobal("stamp");
 
     // can't be set at construction time because of circularity: the page also needs to inject the script...
     @Setter
@@ -25,26 +24,38 @@ public class Script extends SparkScript {
 
     private final JsPersistentWebSocket socket;
 
-    public Script(MServerController controller, MServerSocket serverSocket) {
+    public Script(Style style, MServerController controller, MServerSocket serverSocket) {
         this.controller = controller;
-        this.serverSocket = serverSocket;
+
         this.socket = serverSocket.createClient(
-                literal(MServerSocket.GET_STATUS),
+                JsGetStatus.literal(directory, stamp),
              message -> {
-                var payload = new JsStatus(message);
+                var payload = new JsStatusUpdate(message);
                 // NOTE: should call setStatus, but then should first cancel the existing
                 // setTimeout (or, alternatively, call a setStatus which doesn't do a setTimeout)
-                return playState.set(JsFrontEndState.literal(
+                return seq(playState.set(JsFrontEndState.literal(
                         payload.state(),
                         payload.position(),
                         getTime().divide(1000).minus(payload.position()),
                         payload.duration()
-                ));
+                )),
+                        _forOf(payload.files(), arrayElt -> {
+                            var fileState = new JsFileState(arrayElt);
+                            return let(getElementById(fileState.file()).classList(),
+                                    JsDOMTokenList::new,
+                                    classList -> PlayState.jsApplyStyle(
+                                            style,
+                                            classList,
+                                            fileState.state()));
+                        }));
             });
     }
 
-    public JsStatement doOnLoad() {
-        return seq(socket.poll(),
+    public JsStatement doOnLoad(String actualDirectory, int initialStamp) {
+        return seq(
+                directory.set(literal(actualDirectory)),
+                stamp.set(literal(initialStamp)),
+                socket.poll(),
                         showStatus.invoke());
     }
 
@@ -53,6 +64,8 @@ public class Script extends SparkScript {
         // to easily access properties
         var typedStatus = new JsFrontEndState(this.playState);
         return controller.getJavascript() +
+                directory.declare(literal("")) +
+                stamp.declare(0) +
                 socket.declare() +
                 this.playState.declare(JsFrontEndState.literal(
                         literal(PlayState.LOADING),

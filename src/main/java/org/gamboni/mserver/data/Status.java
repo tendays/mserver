@@ -1,17 +1,16 @@
 package org.gamboni.mserver.data;
 
-import org.gamboni.tech.web.js.JS;
+import java.io.File;
 
-@JS
 public record Status(
-	String nowPlaying,
+	File nowPlaying,
 	PlayState state,
 	double position,
 	double duration,
 	String time) {
 
 	public static final Status STOPPED = new Status(
-			"",
+			null, // use Optional?
 			PlayState.STOPPED,
 			0,
 			0,

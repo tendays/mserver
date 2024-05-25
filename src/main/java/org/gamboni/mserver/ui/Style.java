@@ -8,7 +8,14 @@ public class Style extends SparkStyle {
     public ClassName progress;
     public ClassName grid;
     public ClassName item;
+    public ClassName itemBody;
+    public ClassName label;
     public ClassName thumb;
+
+    /** An item with this style is queued for playing at a later time. */
+    public ClassName queued;
+    /** An item with this style is currently playing (or paused). */
+    public ClassName nowPlaying;
 
     private static final String topHeight = "6em";
 
@@ -44,8 +51,36 @@ public class Style extends SparkStyle {
                         a.overflow("hidden"),
                         a.display("inline-block"))
                 +
-                rule(thumb,
+                rule(itemBody,
+                        a.height("100%"),
+                        a.display("block"))
+                +
+                rule(label,
                         a.position("absolute"),
+                        a.width("100%"),
+                        a.backgroundColor("#eeea"))
+                +
+                rule(nowPlaying,
+                        a.backgroundColor("#fcc"))
+                +
+                rule(nowPlaying.after(),
+                        a.position("absolute"),
+                        a.top("0px"),
+                        a.right("0px"),
+                        a.backgroundColor("#fff"),
+                        a.content("\"🎶\""))
+                +
+                rule(queued,
+                        a.backgroundColor("#ccf"))
+                +
+                rule(queued.after(),
+                        a.position("absolute"),
+                        a.top("0px"),
+                        a.right("0px"),
+                        a.content("\"⏳\""),
+                        a.backgroundColor("#ccfa"))
+                +
+                rule(thumb,
                         a.left("0"),
                         a.maxWidth("100%"))
                 +

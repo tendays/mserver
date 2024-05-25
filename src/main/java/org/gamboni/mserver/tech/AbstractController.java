@@ -3,14 +3,12 @@
  */
 package org.gamboni.mserver.tech;
 
-import java.io.IOException;
-import java.util.function.Function;
-
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.gamboni.tech.web.js.JavaScript;
 import spark.Response;
 import spark.Spark;
+
+import java.io.IOException;
+import java.util.function.Function;
 
 import static org.gamboni.tech.web.js.JavaScript.*;
 
@@ -20,7 +18,12 @@ import static org.gamboni.tech.web.js.JavaScript.*;
  */
 public class AbstractController {
 	private final StringBuilder jsProxy = new StringBuilder();
-	
+	public final Mapping mapping;
+
+	protected AbstractController(Mapping mapping) {
+		this.mapping = mapping;
+	}
+
 	protected interface ServiceBody {
 		Object execute() throws IOException;
 	}
@@ -57,14 +60,9 @@ public class AbstractController {
 		return fun.invoke();
 	}
 
-	private static final ObjectMapper mapper = new ObjectMapper();
-	private static String json(Response res, Object result) {
+	private String json(Response res, Object result) {
 		res.type("application/json");
-		try {
-			return mapper.writeValueAsString(result);
-		} catch (JsonProcessingException e) {
-			throw new RuntimeException(e);
-		}
+		return mapping.writeValueAsString(result);
 	}
 	
 	protected ServiceProxy service(String name, ParamServiceBody serviceBody) {

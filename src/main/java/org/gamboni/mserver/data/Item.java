@@ -4,7 +4,6 @@
 package org.gamboni.mserver.data;
 
 import com.google.common.collect.ImmutableList;
-import org.gamboni.mserver.MServer;
 
 import java.io.File;
 
@@ -13,14 +12,12 @@ import java.io.File;
  *
  */
 public class Item {
-	private final MServer owner;
 	public final File file;
 	private final String ext;
 	public final String base;
 	public final String name;
 
-	public Item(MServer owner, File file) {
-		this.owner = owner;
+	public Item(File file) {
 		this.file = file;
 		
 		this.name = file.getName();
@@ -47,4 +44,7 @@ public class Item {
 		return file.isDirectory();
 	}
 
+	public boolean isAt(File path) {
+		return this.file.getPath().startsWith(path.getPath());
+	}
 }

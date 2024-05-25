@@ -5,6 +5,7 @@ package org.gamboni.mserver;
 
 import lombok.extern.slf4j.Slf4j;
 import org.gamboni.mserver.data.Item;
+import org.gamboni.mserver.tech.Mapping;
 import org.gamboni.mserver.ui.DirectoryPage;
 import org.gamboni.mserver.ui.Script;
 import org.gamboni.mserver.ui.Style;
@@ -35,88 +36,58 @@ public class MServer {
 	}
 
 	private final MServerController controller;
-	private final Style style;
-	private final Script script;
-	private final File folder;
-
+	private final File root;
 	private final DirectoryPage page;
-	private final MServerSocket socketHandler;
+	private final Mapping mapping;
 	
-	public MServer(File folder, List<String> extraParams) {
-		this.folder = folder;
+	public MServer(File root, List<String> extraParams) {
+		this.root = root;
+		this.mapping = new Mapping(root);
+
 		Spark.port(4568);
 
 		Spark.exception(Exception.class, (ex, req, res) -> log.error("Uncaught Exception", ex));
 
 		// WARN: web socket creation must be done before any route, so this must come first
-		this.socketHandler = new MServerSocket();
-		this.controller = new MServerController(this, socketHandler, folder, extraParams);
+		var socketHandler = new MServerSocket(mapping);
+		this.controller = new MServerController(mapping, socketHandler, root, extraParams);
 
-		this.script = new Script(controller, socketHandler);
-		this.style = new Style();
-		this.page = new DirectoryPage(controller, style, script);
+		var style = new Style();
+		var script = new Script(style, controller, socketHandler);
+		this.page = new DirectoryPage(controller, mapping, style, script);
 	}
 	
 	private void run() {
 		Spark.redirect.get("/", "/browse/");
 
 		Spark.get("/browse/*", (req, res) -> {
-			File childFolder = (req.splat().length == 0) ? folder : new File(folder, req.splat()[0]);
-			PathOrError<String> poe = relativePath(childFolder);
-			if (poe.error != null) {
-				return notFound(res, poe.error);
-			}
-			
+			File childFolder = (req.splat().length == 0) ? root : mapping.pathToFile(req.splat()[0]);
+
 			if (childFolder.isFile()) {
 				try (var in = new FileInputStream(childFolder)) {
 					in.transferTo(res.raw().getOutputStream());
 					res.raw().flushBuffer();
 				}
 				return null;
+			} else {
+				return servePage(res, childFolder);
 			}
-
-			return servePage(res, childFolder);
 		});
 	}
 
 	private String servePage(Response res, File childFolder) {
-		PathOrError<String> poe = relativePath(childFolder);
-		String relativePath = poe.path +
-				(poe.path.isEmpty() ? "" : File.separator);
 		File[] files = childFolder.listFiles();
 		if (files == null) {
 			return notFound(res, "Could not list files under " + childFolder);
 		}
-		res.header("Content-Security-Policy", "default-src * 'unsafe-inline' 'unsafe-eval'; script-src * 'unsafe-inline' 'unsafe-eval'; connect-src * 'unsafe-inline'; img-src * data: blob: 'unsafe-inline'; frame-src *; style-src * 'unsafe-inline';");
+
 		return page.render(
-				relativePath,
+				controller.directoryState(childFolder),
+				childFolder,
 				Stream.of(files)
 						.sorted(Comparator.comparing(file -> file.getName().toLowerCase()))
-						.map(file -> new Item(this, file))
+						.map(Item::new)
 						.toList());
-	}
-
-	public PathOrError<String> relativePath(File file) {
-		if (!file.getPath().startsWith(folder.getPath())) {
-			return PathOrError.error("Requested "+ file.getPath() +" does not start from root "+ folder.getPath());
-		} else {
-			return PathOrError.of(file.getPath().substring(folder.getPath().length()));
-		}
-	}
-	
-	public static class PathOrError<T> {
-		public final T path;
-		public final String error;
-		private PathOrError(T path, String error) {
-			this.path = path;
-			this.error = error;
-		}
-		public static <T> PathOrError<T> of(T path) {
-			return new PathOrError<>(path, null);
-		}
-		public static <T> PathOrError<T> error(String error) {
-			return new PathOrError<>(null, error);
-		}
 	}
 
 	private String notFound(Response res, String error) {
