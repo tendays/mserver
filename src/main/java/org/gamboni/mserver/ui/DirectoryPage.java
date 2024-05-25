@@ -64,14 +64,15 @@ public class DirectoryPage extends AbstractPage {
                     attribute("id", id),
                     bodyStyle), "./"+ item.name +"/",
                     span(style.label,
-                    escape(item.name)), thumb(item));
+                    escape(item.friendlyName())), thumb(item));
         } else if (item.isMusic()) {
             return div(List.of(
                             attribute("id", id),
                             bodyStyle,
                             attribute("onclick",
                                     controller.jsPlay(item.file))),
-                    escape(item.friendlyName()),
+                    span(style.label,
+                            escape(item.friendlyName())),
                     thumb(item));
         } else {
             return EMPTY;
