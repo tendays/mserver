@@ -19,5 +19,8 @@ Then I hooked some Home Assistant automations to those.
 
 ## Bugs
 
-* There's no way to know which song is currently playing (other than looking at the logs). This is planned.
 * The progress bar sometimes goes too fast or too slowly. When it goes too fast it may go beyond the end. A fix is planned.
+
+## Acknowledgement
+
+["Music note" favicon created by Freepik - Flaticon](https://www.flaticon.com/free-icons/music-note)

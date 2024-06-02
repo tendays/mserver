@@ -5,18 +5,22 @@ package org.gamboni.mserver;
 
 import com.google.common.base.Joiner;
 import com.google.common.collect.AbstractIterator;
-import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Multimap;
-import org.gamboni.mserver.data.*;
+import lombok.Getter;
+import org.gamboni.mserver.data.GlobalState;
+import org.gamboni.mserver.data.Item;
+import org.gamboni.mserver.data.MServerEvent;
+import org.gamboni.mserver.data.PlayState;
 import org.gamboni.mserver.tech.AbstractController;
 import org.gamboni.mserver.tech.Mapping;
-import org.gamboni.tech.sparkjava.SparkWebSocket;
+import org.gamboni.tech.history.HistoryStore;
 import org.gamboni.tech.web.js.JavaScript.JsExpression;
 
 import java.io.*;
-import java.util.*;
-import java.util.function.UnaryOperator;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -33,17 +37,11 @@ public class MServerController extends AbstractController {
 	private final ImmutableList<String> extraPlayerArgs;
 	private Optional<Process> mplayer = Optional.empty();
 	private final MServerSocket socketHandler;
-	private volatile Status status = Status.STOPPED;
 
-	/**
-	 * Ever-increasing version/generation/stamp number. Every change in play state is associated with a new higher stamp value.
-	 * Clients can request changes since a given stamp value.
-	 */
-	private volatile int stamp = 0;
+	@Getter
+	private final MServerHistoryStore store = new MServerHistoryStore();
 
 	private final List<Item> queue = new ArrayList<>();
-
-	private final Map<File, DirectoryState> directoryStates = new HashMap<>();
 
 	/**
 	 * If present, contains the folder from which to get a random next item to auto-play.
@@ -61,33 +59,36 @@ public class MServerController extends AbstractController {
 			OutputStream out = mp.getOutputStream();
 			out.write(' ');
 			out.flush();
-			updateStatus(s -> new Status(s.nowPlaying(), s.state().togglePaused(), s.position(), s.duration(), s.time()));
+			updateStore(s -> s.setGlobalState(s.getGlobalState().togglePaused()));
 		});
-		return status;
+		return "ok";
 	});
 
 	public final JsExpression skip = service("skip", () -> {
 		skip();
-		return status;
+		return "ok";
 	});
 
 	public final JsExpression stop = service("stop", () -> {
 		stop();
-		return status;
+		return "ok";
 	});
 
 	private void stop() throws IOException {
-		Multimap<SparkWebSocket.Client, FileState> notifications = HashMultimap.create();
-		synchronized (this) {
-			this.shuffleFolder = Optional.empty();
+		// stop shuffling, ...
+		this.shuffleFolder = Optional.empty();
+
+		// ... clear the queue, ...
+		updateStore(session -> {
 			var iterator = queue.iterator();
 			while (iterator.hasNext()) {
 				var item = iterator.next();
-				setFileState(notifications, item.file, PlayState.STOPPED);
+				session.setFileState(ancestors(item.file), PlayState.STOPPED);
 				iterator.remove();
 			}
-		}
-		socketHandler.broadcastState(Status.STOPPED, notifications);
+		});
+
+		// ... and end the current song
 		skip();
 	}
 
@@ -112,13 +113,12 @@ public class MServerController extends AbstractController {
 				if (isRunning()) {
 					queue.add(item);
 					System.out.println("Queued " + item);
-					Multimap<SparkWebSocket.Client, FileState> notifications = HashMultimap.create();
+					var notifications = store.update(session -> {
+						session.setFileState(ancestors(item.file),
+								pointer -> store.isNowPlaying(pointer) ? store.getGlobalState().state() : PlayState.QUEUED);
+					});
 
-					for (var pointer : ancestors(item.file)) {
-						setFileState(notifications, pointer, isNowPlaying(pointer) ? status.state() : PlayState.QUEUED);
-					}
-
-					socketHandler.broadcastState(status, notifications);
+					broadcastState(notifications);
 				} else {
 					playNow(item);
 					startStatusThread();
@@ -177,7 +177,18 @@ public class MServerController extends AbstractController {
 						.add(item.file.getPath())
 						.build()
 						.toArray(new String[0])));
-		this.updateStatus(__ -> new Status(item.file, PlayState.PLAYING, 0, 0, "00:00.0"));
+		updateStore(s -> {
+			Optional<File> playingBefore = s.getNowPlaying();
+			s.setNowPlaying(item.file);
+
+			// see if we need to remove "playing" status of oldState
+			playingBefore.ifPresent(toRemove ->
+				s.setFileState(ancestors(toRemove),
+						pointer -> isQueued(pointer) ? PlayState.QUEUED : PlayState.STOPPED));
+			s.setFileState(ancestors(item.file), PlayState.PLAYING);
+
+			s.setGlobalState(GlobalState.PLAYING);
+		});
 	}
 
 	private void startStatusThread() {
@@ -200,12 +211,11 @@ public class MServerController extends AbstractController {
 
 					Matcher m = STATUS_LINE.matcher(line);
 					if (m.matches()) {
-						updateStatus(s -> new Status(
-								s.nowPlaying(),
-								s.state(),
+						updateStore(s -> s.setGlobalState(new GlobalState(
+								s.getGlobalState().state(),
 								Double.parseDouble(m.group(1)),
 								Double.parseDouble(m.group(3)),
-								m.group(2)));
+								m.group(2))));
 					} else {
 						System.out.println(line);
 					}
@@ -232,7 +242,15 @@ public class MServerController extends AbstractController {
 		} else if (shuffleFolder.isPresent() && shuffleOne()) {
 			return true;
 		} else {
-			updateStatus(__ -> Status.STOPPED);
+			updateStore(s -> {
+				s.setGlobalState(GlobalState.STOPPED);
+				Optional<File> playingBefore = s.getNowPlaying();
+				s.clearNowPlaying();
+				// see if we need to remove "playing" status of oldState
+				playingBefore.ifPresent(toRemove ->
+						s.setFileState(ancestors(toRemove),
+								pointer -> isQueued(pointer) ? PlayState.QUEUED : PlayState.STOPPED));
+			});
 			return false;
 		}
 	}
@@ -268,20 +286,11 @@ public class MServerController extends AbstractController {
 		}
 	}
 
-	public synchronized DirectoryState directoryState(File path) {
-		return directoryStates.computeIfAbsent(path, __ -> new DirectoryState());
-	}
-
 	/**
 	 * True if {@code path} is either the name of an item in queue, or one of its parent directories.
 	 */
 	private boolean isQueued(File path) {
 		return queue.stream().anyMatch(item -> item.isAt(path));
-	}
-
-	private boolean isNowPlaying(File path) {
-		return status.nowPlaying() != null && status.nowPlaying()
-				.getPath().startsWith(path.getPath());
 	}
 
 	/**
@@ -303,46 +312,8 @@ public class MServerController extends AbstractController {
 		};
 	}
 
-	private void updateStatus(UnaryOperator<Status> op) {
-		Status oldState, newState;
-
-		Multimap<SparkWebSocket.Client, FileState> notifications = HashMultimap.create();
-		synchronized (this) {
-			stamp++;
-			oldState = status;
-			status = op.apply(status);
-			newState = status;
-			// see if we need to remove "playing" status of oldState
-			if (oldState.nowPlaying() != null && !oldState.nowPlaying().equals(newState.nowPlaying())) {
-				for (var pointer : ancestors(oldState.nowPlaying())) {
-					setFileState(notifications, pointer, isQueued(pointer) ? PlayState.QUEUED : PlayState.STOPPED);
-				}
-			}
-			if (newState.nowPlaying() != null &&
-					(!newState.nowPlaying().equals(oldState.nowPlaying()) ||
-							newState.state() != oldState.state())) {
-				for (var pointer : ancestors(newState.nowPlaying())) {
-					setFileState(notifications, pointer, newState.state());
-				}
-			}
-		}
-		if (oldState.state() != newState.state() ||
-				// when starting a new item duration switches from 0 to actual value;
-				// we want to notify the front ends at that time
-				oldState.duration() != newState.duration()) {
-			socketHandler.broadcastState(newState, notifications);
-		}
-	}
-
-	private void setFileState(Multimap<SparkWebSocket.Client, FileState> notifications, File file, PlayState state) {
-		FileState fileState = new FileState(file, state);
-		for (var client : directoryState(file.getParentFile()).setFileState(file, stamp, state)) {
-			notifications.put(client, fileState);
-		}
-	}
-
-	public Status getCurrentStatus() {
-		return this.status;
+	private void updateStore(Consumer<MServerHistoryStore.UpdateSession> work) {
+		broadcastState(store.update(work));
 	}
 
 	/** Return JavaScript code to play the given file. */
@@ -350,4 +321,10 @@ public class MServerController extends AbstractController {
 		return play.call(literal(mapping.fileToPath(file)));
 	}
 
+
+	public void broadcastState(HistoryStore<?, ?, ?, MServerEvent>.PerClientUpdates notifications) {
+		if (notifications.hasEvents()) {
+			socketHandler.broadcast(notifications::get);
+		}
+	}
 }

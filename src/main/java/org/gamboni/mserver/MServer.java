@@ -48,6 +48,8 @@ public class MServer {
 
 		Spark.exception(Exception.class, (ex, req, res) -> log.error("Uncaught Exception", ex));
 
+		Spark.staticFiles.location("static");
+
 		// WARN: web socket creation must be done before any route, so this must come first
 		var socketHandler = new MServerSocket(mapping);
 		this.controller = new MServerController(mapping, socketHandler, root, extraParams);
@@ -82,7 +84,7 @@ public class MServer {
 		}
 
 		return page.render(
-				controller.directoryState(childFolder),
+				controller.getStore().getSnapshot(childFolder),
 				childFolder,
 				Stream.of(files)
 						.sorted(Comparator.comparing(file -> file.getName().toLowerCase()))

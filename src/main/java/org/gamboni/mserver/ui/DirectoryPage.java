@@ -1,14 +1,11 @@
 package org.gamboni.mserver.ui;
 
+import org.gamboni.mserver.DirectorySnapshot;
 import org.gamboni.mserver.MServerController;
-import org.gamboni.mserver.data.DirectoryState;
 import org.gamboni.mserver.data.Item;
 import org.gamboni.mserver.data.PlayState;
 import org.gamboni.mserver.tech.Mapping;
-import org.gamboni.tech.web.ui.AbstractPage;
-import org.gamboni.tech.web.ui.Css;
-import org.gamboni.tech.web.ui.Html;
-import org.gamboni.tech.web.ui.IdentifiedElement;
+import org.gamboni.tech.web.ui.*;
 
 import java.io.File;
 import java.util.List;
@@ -35,8 +32,8 @@ public class DirectoryPage extends AbstractPage {
     }
     public final IdentifiedElement status = setId("status").to(p(escape("Loading…")));
 
-    public String render(DirectoryState state, File folder, Iterable<Item> files) {
-        return html(List.of(style, script), List.of(
+    public String render(DirectorySnapshot snapshot, File folder, Iterable<Item> files) {
+        return html(List.of(style, script, new FavIconResource("favicon.png", "image/png")), List.of(
                         div(List.of(style.top),
                                 p(
                                         button("Play/Pause", controller.pause),
@@ -47,12 +44,12 @@ public class DirectoryPage extends AbstractPage {
                                 status,
                                 div(List.of(style.progressBar),
                                         progress)),
-                        ul(style.grid, files, style.item, item -> box(state.getFileState(item.file), item))
+                        ul(style.grid, files, style.item, item -> box(snapshot.getFileState(item.file), item))
                 )
         )
                 .onLoad(script.doOnLoad(
                         mapping.fileToPath(folder),
-                        state.getStamp()))
+                        snapshot.stamp()))
                 .toString();
     }
 

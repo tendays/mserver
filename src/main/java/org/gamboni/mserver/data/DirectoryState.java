@@ -1,18 +1,21 @@
 package org.gamboni.mserver.data;
 
-import lombok.Getter;
-import org.gamboni.tech.sparkjava.SparkWebSocket;
+import org.gamboni.tech.web.BroadcastTarget;
 
 import java.io.File;
 import java.util.*;
 
+import static java.util.stream.Collectors.toMap;
+
 public class DirectoryState {
 
-    private final Set<SparkWebSocket.Client> listeners = new LinkedHashSet<>();
-    @Getter
-    private int stamp;
+    private final Set<BroadcastTarget> listeners = new LinkedHashSet<>();
 
-    private record StampedState(PlayState state, int stamp) {}
+    public Set<BroadcastTarget> getClients() {
+        return Collections.unmodifiableSet(listeners);
+    }
+
+    private record StampedState(PlayState state, long stamp) {}
 
     private final Map<File, StampedState> fileState = new HashMap<>();
 
@@ -23,23 +26,22 @@ public class DirectoryState {
      * @param state the new state of the file
      * @return the list of clients to notify of this change
      */
-    public synchronized List<SparkWebSocket.Client> setFileState(File file, int stamp, PlayState state) {
-        this.stamp = stamp;
+    public List<BroadcastTarget> setFileState(File file, long stamp, PlayState state) {
         fileState.put(file, new StampedState(state, stamp));
-        return List.copyOf(listeners); // TODO deal with concurrent changes: client arriving after this copy, and client going away after this copy? Use stamps.
+        return List.copyOf(listeners);
     }
 
-    public synchronized void addListener(SparkWebSocket.Client listener) {
+    public void addListener(BroadcastTarget listener) {
         this.listeners.add(listener);
     }
 
-    public synchronized PlayState getFileState(File file) {
-        return Optional.ofNullable(fileState.get(file))
-                .map(StampedState::state)
-                .orElse(PlayState.STOPPED);
+    public Map<File, PlayState> getSnapshot() {
+        return fileState.entrySet().stream()
+                .collect(toMap(Map.Entry::getKey,
+                        e -> e.getValue().state()));
     }
 
-    public synchronized List<FileState> getUpdatesSince(int stamp) {
+    public List<FileState> getUpdatesSince(long stamp) {
         return fileState
                 .entrySet()
                 .stream()

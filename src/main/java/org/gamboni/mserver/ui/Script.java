@@ -4,6 +4,7 @@ import lombok.Setter;
 import org.gamboni.mserver.MServerController;
 import org.gamboni.mserver.MServerSocket;
 import org.gamboni.mserver.data.*;
+import org.gamboni.tech.history.JsStampedEventList;
 import org.gamboni.tech.sparkjava.SparkScript;
 import org.gamboni.tech.web.js.JsPersistentWebSocket;
 
@@ -30,28 +31,37 @@ public class Script extends SparkScript {
         this.socket = serverSocket.createClient(
                 JsGetStatus.literal(directory, stamp),
              message -> {
-                var payload = new JsStatusUpdate(message);
+                var payload = new JsStampedEventList(message);
+
                 // NOTE: should call setStatus, but then should first cancel the existing
                 // setTimeout (or, alternatively, call a setStatus which doesn't do a setTimeout)
-                return seq(playState.set(JsFrontEndState.literal(
-                        payload.state(),
-                        payload.position(),
-                        getTime().divide(1000).minus(payload.position()),
-                        payload.duration()
-                )),
-                        _forOf(payload.files(), arrayElt -> {
+                return seq(
+                        stamp.set(payload.stamp()),
+                        _forOf(payload.updates(), arrayElt -> {
+                            // arrayElt can be either a JsFileState or a JsGlobalState.
                             var fileState = new JsFileState(arrayElt);
-                            return let(getElementById(fileState.file()).classList(),
+                            var newGlobalState = new JsGlobalState(arrayElt);
+                            // if there's a 'file' then it's really a JsFileState.
+                            return _if(fileState.file(), block(let(getElementById(fileState.file()).classList(),
                                     JsDOMTokenList::new,
                                     classList -> PlayState.jsApplyStyle(
                                             style,
                                             classList,
-                                            fileState.state()));
+                                            fileState.state()))))
+                                    ._else(
+                                            // else, it's a JsGlobalState
+                                            playState.set(JsFrontEndState.literal(
+                                                    newGlobalState.state(),
+                                                    newGlobalState.position(),
+                                                    getTime().divide(1000).minus(newGlobalState.position()),
+                                                    newGlobalState.duration()
+                                            )
+                                    ));
                         }));
             });
     }
 
-    public JsStatement doOnLoad(String actualDirectory, int initialStamp) {
+    public JsStatement doOnLoad(String actualDirectory, long initialStamp) {
         return seq(
                 directory.set(literal(actualDirectory)),
                 stamp.set(literal(initialStamp)),
