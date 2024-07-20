@@ -42,12 +42,12 @@ public class Script extends SparkScript {
                             var fileState = new JsFileState(arrayElt);
                             var newGlobalState = new JsGlobalState(arrayElt);
                             // if there's a 'file' then it's really a JsFileState.
-                            return _if(fileState.file(), block(let(getElementById(fileState.file()).classList(),
+                            return _if(fileState.file(), let(getElementById(fileState.file()).classList(),
                                     JsDOMTokenList::new,
                                     classList -> PlayState.jsApplyStyle(
                                             style,
                                             classList,
-                                            fileState.state()))))
+                                            fileState.state())))
                                     ._else(
                                             // else, it's a JsGlobalState
                                             playState.set(JsFrontEndState.literal(

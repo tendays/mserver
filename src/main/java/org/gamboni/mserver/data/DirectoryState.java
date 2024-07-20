@@ -1,6 +1,6 @@
 package org.gamboni.mserver.data;
 
-import org.gamboni.tech.web.BroadcastTarget;
+import org.gamboni.tech.web.ws.BroadcastTarget;
 
 import java.io.File;
 import java.util.*;
@@ -31,6 +31,7 @@ public class DirectoryState {
         return List.copyOf(listeners);
     }
 
+    // TODO when do we remove them??
     public void addListener(BroadcastTarget listener) {
         this.listeners.add(listener);
     }

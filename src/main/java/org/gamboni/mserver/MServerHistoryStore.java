@@ -1,8 +1,8 @@
 package org.gamboni.mserver;
 
 import org.gamboni.mserver.data.*;
-import org.gamboni.tech.history.HistoryStore;
-import org.gamboni.tech.web.BroadcastTarget;
+import org.gamboni.tech.history.InMemoryHistoryStore;
+import org.gamboni.tech.web.ws.BroadcastTarget;
 
 import java.io.File;
 import java.util.*;
@@ -10,7 +10,7 @@ import java.util.function.Function;
 
 import static java.util.stream.Collectors.toSet;
 
-public class MServerHistoryStore extends HistoryStore<
+public class MServerHistoryStore extends InMemoryHistoryStore<
         File,
         DirectorySnapshot,
         MServerHistoryStore.UpdateSession,
@@ -51,7 +51,8 @@ public class MServerHistoryStore extends HistoryStore<
 
     public class UpdateSession extends AbstractUpdateSession<MServerEvent> {
 
-        private UpdateSession() {
+        private UpdateSession(long stamp) {
+            super(stamp);
         }
 
         public void setNowPlaying(File file) {
@@ -106,7 +107,7 @@ public class MServerHistoryStore extends HistoryStore<
     }
 
     @Override
-    protected UpdateSession newTransaction() {
-        return new UpdateSession();
+    protected UpdateSession newTransaction(long stamp) {
+        return new UpdateSession(stamp);
     }
 }

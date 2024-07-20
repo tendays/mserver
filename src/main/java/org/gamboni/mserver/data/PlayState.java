@@ -10,7 +10,8 @@ import java.util.Collection;
 import java.util.Optional;
 import java.util.function.Function;
 
-import static org.gamboni.tech.web.js.JavaScript.*;
+import static org.gamboni.tech.web.js.JavaScript.EMPTY_IF_CHAIN;
+import static org.gamboni.tech.web.js.JavaScript.toSeq;
 
 public enum PlayState {
     LOADING,
@@ -50,21 +51,19 @@ public enum PlayState {
                 .stream()
                 .reduce(EMPTY_IF_CHAIN,
                         (chain, entry) -> chain._elseIf(isOneOf(jsPlayState, entry.getValue()),
-                                block(
                                         /* Remove other classes */
-                                        seq(cases.keySet()
+                                        cases.keySet()
                                                 .stream()
                                                 .filter(thatClass -> !thatClass.equals(entry.getKey()))
                                                         .map(classList::remove)
-                                                                .toList()),
+                                                .collect(toSeq()),
 
-                                classList.add(entry.getKey()))),
+                                classList.add(entry.getKey())),
                                 (x, y) -> {throw new UnsupportedOperationException();})
 
-                ._else(block(cases.keySet()
+                ._else(cases.keySet()
                         .stream()
-                        .map(classList::remove)
-                        .toList()));
+                        .map(classList::remove));
     }
 
     private static JavaScript.JsExpression isOneOf(JavaScript.JsExpression value, Collection<? extends Enum<?>> collection) {
