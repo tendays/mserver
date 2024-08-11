@@ -4,10 +4,14 @@
 package org.gamboni.mserver.tech;
 
 import org.gamboni.tech.web.js.JavaScript;
+import org.gamboni.tech.web.ui.AbstractPage;
+import org.gamboni.tech.web.ui.ScriptMember;
 import spark.Response;
 import spark.Spark;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.Function;
 
 import static org.gamboni.tech.web.js.JavaScript.*;
@@ -17,7 +21,7 @@ import static org.gamboni.tech.web.js.JavaScript.*;
  *
  */
 public class AbstractController {
-	private final StringBuilder jsProxy = new StringBuilder();
+	private final List<ScriptMember> jsProxy = new ArrayList<>();
 	public final Mapping mapping;
 
 	protected AbstractController(Mapping mapping) {
@@ -45,8 +49,8 @@ public class AbstractController {
 	
 	protected JsExpression service(String name, ServiceBody serverBody) {
 		var fun = new Fun(name);
-		jsProxy.append(
-				fun.declare(() ->
+		jsProxy.add(
+				fun.declare(
 						let(newXMLHttpRequest(),
 								JsExpression::of,
 								r -> seq(
@@ -67,7 +71,7 @@ public class AbstractController {
 	
 	protected ServiceProxy service(String name, ParamServiceBody serviceBody) {
 		var fun = new JavaScript.Fun1(name);
-		jsProxy.append(
+		jsProxy.add(
 				fun.declare(arg ->
 						let(newXMLHttpRequest(),
 								JavaScript.JsExpression::of,
@@ -85,7 +89,7 @@ public class AbstractController {
 	
 	protected CallbackServiceProxy getService(String name, ServiceBody serviceBody) {
 		var fun = new JavaScript.Fun1(name);
-		jsProxy.append(
+		jsProxy.add(
 				fun.declare(callback ->
 						let(newXMLHttpRequest(),
 								JavaScript.JsExpression::of,
@@ -114,7 +118,7 @@ public class AbstractController {
 						.format(s) +")";
 	}
 
-	public String getJavascript() {
-		return this.jsProxy.toString();
+	public void addTo(AbstractPage page) {
+		jsProxy.forEach(page::addToScript);
 	}
 }

@@ -7,7 +7,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.gamboni.mserver.data.Item;
 import org.gamboni.mserver.tech.Mapping;
 import org.gamboni.mserver.ui.DirectoryPage;
-import org.gamboni.mserver.ui.Script;
 import org.gamboni.mserver.ui.Style;
 import spark.Response;
 import spark.Spark;
@@ -55,8 +54,7 @@ public class MServer {
 		this.controller = new MServerController(mapping, socketHandler, root, extraParams);
 
 		var style = new Style();
-		var script = new Script(style, controller, socketHandler);
-		this.page = new DirectoryPage(controller, mapping, style, script);
+		this.page = new DirectoryPage(controller, mapping, style, socketHandler);
 	}
 	
 	private void run() {

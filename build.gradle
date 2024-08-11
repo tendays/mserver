@@ -19,12 +19,12 @@ dependencies {
     compileOnly 'org.projectlombok:lombok:1.18.30'
 
     annotationProcessor 'org.projectlombok:lombok:1.18.30'
-    annotationProcessor 'org.gamboni:tech-web:1.0.0-SNAPSHOT'
+    annotationProcessor 'org.gamboni:tech-web:0.0.2-SNAPSHOT'
 
     implementation 'org.slf4j:slf4j-simple:2.0.13'
     implementation 'com.google.guava:guava:33.0.0-jre'
-    implementation 'org.gamboni:tech-sparkjava:0.0.1'
-    implementation 'org.gamboni:tech-history:0.0.1'
+    implementation 'org.gamboni:tech-sparkjava:0.0.2-SNAPSHOT'
+    implementation 'org.gamboni:tech-history:0.0.2-SNAPSHOT'
 
     implementation 'com.fasterxml.jackson.core:jackson-core:2.16.1'
     implementation 'com.fasterxml.jackson.core:jackson-databind:2.16.1'
