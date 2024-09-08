@@ -20,7 +20,10 @@ import java.util.List;
 import static org.gamboni.tech.web.js.JavaScript.*;
 import static org.gamboni.tech.web.ui.Html.*;
 
-public class DirectoryPage extends SparkPage {
+public class DirectoryPage extends SparkPage<DirectoryPage.Data> {
+
+    // TODO see if we can put all the information in DirectorySnapshot?
+    public record Data(DirectorySnapshot snapshot, File folder, Iterable<Item> files) {}
 
     private final MServerController controller;
     private final Mapping mapping;
@@ -33,16 +36,14 @@ public class DirectoryPage extends SparkPage {
 
     public final JavaScript.Fun showStatus = new JavaScript.Fun("showStatus");
 
-    private final ClientStateHandler stateHandler;
-    private final JsPersistentWebSocket socket;
+    private final ClientStateHandler stateHandler = new ClientStateHandler() {
+        @Override
+        protected JsExpression helloValue(JsExpression stamp) {
+            return JsGetStatus.literal(directory, stamp);
+        }
+    };
 
-    public JsStatement doOnLoad(String actualDirectory, long initialStamp) {
-        return seq(
-                directory.set(literal(actualDirectory)),
-                stateHandler.init(literal(initialStamp)),
-                socket.poll(),
-                showStatus.invoke());
-    }
+    private final JsPersistentWebSocket socket;
 
     private JsStatement setProgressBarPercent(JsExpression value) {
         return progress.find().style().dot("width")
@@ -54,38 +55,33 @@ public class DirectoryPage extends SparkPage {
         this.mapping = mapping;
         this.style = style;
         this.progress = setId("progress").to(div(List.of(style.progress)));
-        this.stateHandler = new ClientStateHandler() {
-            @Override
-            protected JavaScript.JsStatement applyUpdate(JavaScript.JsExpression event) {
-                // NOTE: should call setStatus, but then should first cancel the existing
-                // setTimeout (or, alternatively, call a setStatus which doesn't do a setTimeout)
 
-                // event can be either a JsFileState or a JsGlobalState.
-                var fileState = new JsFileState(event);
-                var newGlobalState = new JsGlobalState(event);
+        // event can be either a JsFileState or a JsGlobalState.
+
+        // NOTE: should call setStatus, but then should first cancel the existing
+        // setTimeout (or, alternatively, call a setStatus which doesn't do a setTimeout)
+        stateHandler.addHandler(
                 // if there's a 'file' then it's really a JsFileState.
-                return _if(fileState.file(), let(getElementById(fileState.file()).classList(),
+                (event, matcher) -> {
+                    var fileState = new JsFileState(event);
+                    matcher.expect(fileState.file());
+                    return fileState;
+                }, event -> let(getElementById(event.file()).classList(),
                         JsDOMTokenList::new,
                         classList -> PlayState.jsApplyStyle(
                                 style,
                                 classList,
-                                fileState.state())))
-                        ._else(
-                                // else, it's a JsGlobalState
-                                playState.set(JsFrontEndState.literal(
-                                                newGlobalState.state(),
-                                                newGlobalState.position(),
-                                                getTime().divide(1000).minus(newGlobalState.position()),
-                                                newGlobalState.duration()
-                                        )
-                                ));
-            }
+                                event.state())));
 
-            @Override
-            protected JsExpression helloValue(JsExpression stamp) {
-                return JsGetStatus.literal(directory, stamp);
-            }
-        };
+        // else, it's a JsGlobalState
+        stateHandler.addHandler((event, matcher) -> new JsGlobalState(event),
+                event -> playState.set(JsFrontEndState.literal(
+                        event.state(),
+                        event.position(),
+                        getTime().divide(1000).minus(event.position()),
+                        event.duration()
+                )));
+
         this.socket = serverSocket.createClient(stateHandler);
 
         // to easily access properties
@@ -99,26 +95,39 @@ public class DirectoryPage extends SparkPage {
                         literal(0),
                         literal(0))),
                 showStatus.declare(seq(
-                                status.find().setInnerHtml(typedStatus.state()),
-                                _if(typedStatus.state().eq(PlayState.PLAYING),
-                                        setProgressBarPercent(getTime().divide(1000).minus(typedStatus.playStarted())
+                        status.find().setInnerHtml(typedStatus.state()),
+                        _if(typedStatus.state().eq(PlayState.PLAYING),
+                                setProgressBarPercent(getTime().divide(1000).minus(typedStatus.playStarted())
+                                        .times(100)
+                                        .divide(typedStatus.duration())))
+                                ._elseIf(typedStatus.state().eq(PlayState.PAUSED),
+                                        setProgressBarPercent(typedStatus.pausedPosition()
                                                 .times(100)
-                                                .divide(typedStatus.duration())))
-                                        ._elseIf(typedStatus.state().eq(PlayState.PAUSED),
-                                                setProgressBarPercent(typedStatus.pausedPosition()
-                                                        .times(100)
-                                                        .divide(typedStatus.duration()))
-                                        )
-                                        ._else(setProgressBarPercent(literal(0))),
-                                setTimeout(showStatus.invoke(), 1000)
-                        )));
+                                                .divide(typedStatus.duration()))
+                                )
+                                ._else(setProgressBarPercent(literal(0))),
+                        setTimeout(showStatus.invoke(), 1000)
+                )));
 
         socket.addTo(this);
+
+        addToOnLoad(onLoad ->
+                directory.set(
+                        onLoad.addParameter(data ->
+                                literal(mapping.fileToPath(data.folder)))));
+        addToOnLoad(onLoad ->
+                stateHandler.init(
+                        onLoad.addParameter(data ->
+                                literal(data.snapshot.stamp()))));
+
+        addToOnLoad(onLoad -> socket.poll());
+        addToOnLoad(onLoad -> showStatus.invoke());
     }
+
     public final IdentifiedElement status = setId("status").to(p(escape("Loading…")));
 
-    public String render(DirectorySnapshot snapshot, File folder, Iterable<Item> files) {
-        return html(List.of(style, getScript(), new FavIconResource("favicon.png", "image/png")), List.of(
+    public Html render(Data data) {
+        return html(data, List.of(style, new FavIconResource("favicon.png", "image/png")), List.of(
                         div(List.of(style.top),
                                 p(
                                         button("Play/Pause", controller.pause),
@@ -129,13 +138,9 @@ public class DirectoryPage extends SparkPage {
                                 status,
                                 div(List.of(style.progressBar),
                                         progress)),
-                        ul(style.grid, files, style.item, item -> box(snapshot.getFileState(item.file), item))
+                        ul(style.grid, data.files, style.item, item -> box(data.snapshot.getFileState(item.file), item))
                 )
-        )
-                .onLoad(doOnLoad(
-                        mapping.fileToPath(folder),
-                        snapshot.stamp()))
-                .toString();
+        );
     }
 
     private Html box(PlayState state, Item item) {

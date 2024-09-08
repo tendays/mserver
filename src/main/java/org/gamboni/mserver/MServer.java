@@ -81,13 +81,13 @@ public class MServer {
 			return notFound(res, "Could not list files under " + childFolder);
 		}
 
-		return page.render(
+		return page.render(new DirectoryPage.Data(
 				controller.getStore().getSnapshot(childFolder),
 				childFolder,
 				Stream.of(files)
 						.sorted(Comparator.comparing(file -> file.getName().toLowerCase()))
 						.map(Item::new)
-						.toList());
+						.toList())).toString();
 	}
 
 	private String notFound(Response res, String error) {

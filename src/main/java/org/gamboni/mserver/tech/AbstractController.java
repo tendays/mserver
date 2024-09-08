@@ -118,7 +118,7 @@ public class AbstractController {
 						.format(s) +")";
 	}
 
-	public void addTo(AbstractPage page) {
+	public void addTo(AbstractPage<?> page) {
 		jsProxy.forEach(page::addToScript);
 	}
 }
