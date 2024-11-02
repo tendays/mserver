@@ -9,7 +9,6 @@ import com.google.common.collect.ImmutableList;
 import lombok.Getter;
 import org.gamboni.mserver.data.GlobalState;
 import org.gamboni.mserver.data.Item;
-import org.gamboni.mserver.data.MServerEvent;
 import org.gamboni.mserver.data.PlayState;
 import org.gamboni.mserver.tech.AbstractController;
 import org.gamboni.mserver.tech.Mapping;
@@ -322,7 +321,7 @@ public class MServerController extends AbstractController {
 	}
 
 
-	public void broadcastState(HistoryStore<?, ?, ?, MServerEvent>.PerClientUpdates notifications) {
+	public void broadcastState(HistoryStore<?, ?, ?>.PerClientUpdates notifications) {
 		if (notifications.hasEvents()) {
 			socketHandler.broadcast(notifications::get);
 		}

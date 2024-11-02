@@ -24,7 +24,7 @@ public class Style extends SparkStyle {
         var a = Properties.INSTANCE;
         return rule(top,
 
-                a.position("fixed"),
+                Position.FIXED,
                 a.width("100%"),
                 a.height(topHeight),
                 a.top("0em"),
@@ -40,23 +40,23 @@ public class Style extends SparkStyle {
                         a.backgroundColor("red"))
                 +
                 rule(item,
-                        a.position("relative"),
-                        a.cursor("pointer"),
+                        Position.RELATIVE,
+                        Cursor.POINTER,
                         a.height("6em"),
                         a.backgroundColor("#eee"),
                         a.margin("5px"),
                         a.width("6em"),
-                        a.fontFamily("sans"),
-                        a.fontVariantCaps("small-caps"),
-                        a.overflow("hidden"),
-                        a.display("inline-block"))
+                        FontFamily.SANS,
+                        FontVariantCaps.SMALL_CAPS,
+                        Overflow.HIDDEN,
+                        Display.INLINE_BLOCK)
                 +
                 rule(itemBody,
                         a.height("100%"),
-                        a.display("block"))
+                        Display.BLOCK)
                 +
                 rule(label,
-                        a.position("absolute"),
+                        Position.ABSOLUTE,
                         a.width("100%"),
                         a.backgroundColor("#eeea"))
                 +
@@ -64,7 +64,7 @@ public class Style extends SparkStyle {
                         a.backgroundColor("#fcc"))
                 +
                 rule(nowPlaying.after(),
-                        a.position("absolute"),
+                        Position.ABSOLUTE,
                         a.top("0px"),
                         a.right("0px"),
                         a.backgroundColor("#fff"),
@@ -74,7 +74,7 @@ public class Style extends SparkStyle {
                         a.backgroundColor("#ccf"))
                 +
                 rule(queued.after(),
-                        a.position("absolute"),
+                        Position.ABSOLUTE,
                         a.top("0px"),
                         a.right("0px"),
                         a.content("\"⏳\""),

@@ -1,7 +1,12 @@
 package org.gamboni.mserver;
 
-import org.gamboni.mserver.data.*;
+import lombok.Getter;
+import org.gamboni.mserver.data.DirectoryState;
+import org.gamboni.mserver.data.FileState;
+import org.gamboni.mserver.data.GlobalState;
+import org.gamboni.mserver.data.PlayState;
 import org.gamboni.tech.history.InMemoryHistoryStore;
+import org.gamboni.tech.history.event.Event;
 import org.gamboni.tech.web.ws.BroadcastTarget;
 
 import java.io.File;
@@ -13,12 +18,13 @@ import static java.util.stream.Collectors.toSet;
 public class MServerHistoryStore extends InMemoryHistoryStore<
         File,
         DirectorySnapshot,
-        MServerHistoryStore.UpdateSession,
-        MServerEvent> {
+        MServerHistoryStore.UpdateSession> {
 
     private final Map<File, DirectoryState> directoryStates = new HashMap<>();
+    private final Map<BroadcastTarget, DirectoryState> listeners = new HashMap<>();
 
     private Optional<File> nowPlaying = Optional.empty();
+    @Getter
     private volatile GlobalState globalState = GlobalState.STOPPED;
 
     private synchronized DirectoryState directoryState(File path) {
@@ -31,16 +37,18 @@ public class MServerHistoryStore extends InMemoryHistoryStore<
     }
 
     @Override
-    public synchronized List<MServerEvent> internalAddListener(BroadcastTarget client, File path, long stamp) {
+    public synchronized List<Event> internalAddListener(BroadcastTarget client, File path, long stamp) {
         DirectoryState directoryState = directoryState(path);
         directoryState.addListener(client);
-        List<MServerEvent> events = new ArrayList<>(directoryState.getUpdatesSince(stamp));
+        listeners.put(client, directoryState);
+        List<Event> events = new ArrayList<>(directoryState.getUpdatesSince(stamp));
         events.add(this.globalState);
         return events;
     }
 
-    public GlobalState getGlobalState() {
-        return globalState;
+    @Override
+    public void removeListener(BroadcastTarget broadcastTarget) {
+        listeners.get(broadcastTarget).removeListener(broadcastTarget);
     }
 
     public synchronized boolean isNowPlaying(File path) {
@@ -49,7 +57,7 @@ public class MServerHistoryStore extends InMemoryHistoryStore<
                 .orElse(false);
     }
 
-    public class UpdateSession extends AbstractUpdateSession<MServerEvent> {
+    public class UpdateSession extends AbstractUpdateSession {
 
         private UpdateSession(long stamp) {
             super(stamp);

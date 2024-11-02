@@ -31,9 +31,12 @@ public class DirectoryState {
         return List.copyOf(listeners);
     }
 
-    // TODO when do we remove them??
     public void addListener(BroadcastTarget listener) {
         this.listeners.add(listener);
+    }
+
+    public void removeListener(BroadcastTarget listener) {
+        this.listeners.remove(listener);
     }
 
     public Map<File, PlayState> getSnapshot() {

@@ -1,5 +1,6 @@
 package org.gamboni.mserver.data;
 
+import org.gamboni.tech.history.event.Event;
 import org.gamboni.tech.web.js.JS;
 
 @JS
@@ -11,7 +12,7 @@ public record GlobalState(
         /** Duration of the currently-playing file, if any */
         double duration,
         /** Formatted position in the current file. */
-        String time) implements MServerEvent {
+        String time) implements Event {
     public static final GlobalState STOPPED = new GlobalState(
             PlayState.STOPPED,
             0,
