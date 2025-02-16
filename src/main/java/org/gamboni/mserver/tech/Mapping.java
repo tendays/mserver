@@ -1,6 +1,7 @@
 package org.gamboni.mserver.tech;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.File;
@@ -15,7 +16,10 @@ public class Mapping implements Supplier<ObjectMapper> {
 
     public Mapping(File rootFolder) {
         this.fileNameFormat = new FileNameJsonFormat(rootFolder);
-        this.jacksonMapper = new ObjectMapper().registerModule(fileNameFormat.jacksonModule());
+        this.jacksonMapper = new ObjectMapper().registerModule(fileNameFormat.jacksonModule())
+                // This is needed when parsing mpv-sent events, and also to not crash if a front end
+                // sends junk
+                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
     }
 
     public File pathToFile(String path) {

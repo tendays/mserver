@@ -3,10 +3,11 @@
  */
 package org.gamboni.mserver;
 
-import com.google.common.base.Joiner;
 import com.google.common.collect.AbstractIterator;
 import com.google.common.collect.ImmutableList;
+import com.google.common.util.concurrent.Uninterruptibles;
 import lombok.Getter;
+import lombok.ToString;
 import org.gamboni.mserver.data.GlobalState;
 import org.gamboni.mserver.data.Item;
 import org.gamboni.mserver.data.PlayState;
@@ -15,13 +16,19 @@ import org.gamboni.mserver.tech.Mapping;
 import org.gamboni.tech.history.HistoryStore;
 import org.gamboni.tech.web.js.JavaScript.JsExpression;
 
-import java.io.*;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.IOException;
+import java.net.UnixDomainSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
+import java.nio.channels.SocketChannel;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Consumer;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 import static org.gamboni.tech.web.js.JavaScript.literal;
@@ -32,13 +39,16 @@ import static org.gamboni.tech.web.js.JavaScript.literal;
  */
 public class MServerController extends AbstractController {
 
+	private static final String SOCKET = "/tmp/mserver";
+
 	final File root;
 	private final ImmutableList<String> extraPlayerArgs;
-	private Optional<Process> mplayer = Optional.empty();
 	private final MServerSocket socketHandler;
+	private Optional<Process> mpvProcess = Optional.empty();
+	private Optional<SocketClient> mpvClient = Optional.empty();
 
 	@Getter
-	private final MServerHistoryStore store = new MServerHistoryStore();
+	private final MServerHistoryStore store;
 
 	private final List<Item> queue = new ArrayList<>();
 
@@ -47,17 +57,12 @@ public class MServerController extends AbstractController {
 	 */
 	private Optional<File> shuffleFolder = Optional.empty();
 
-	private static final Pattern STATUS_LINE = Pattern.compile("A: *([0-9.]*) \\(([0-9:.]*)\\) of ([0-9.]*).*");
-
-	// mplayer  -vc dummy -vo null -noconsolecontrols  -really-quiet -vo null -ao pulse::1
 	private final ServiceProxy play;
 	private final ServiceProxy shuffle;
 
 	public final JsExpression pause = service("pause", () -> {
 		ifRunning(mp -> {
-			OutputStream out = mp.getOutputStream();
-			out.write(' ');
-			out.flush();
+			mp.write("{\"command\": [\"cycle\", \"pause\"]}");
 			updateStore(s -> s.setGlobalState(s.getGlobalState().togglePaused()));
 		});
 		return "ok";
@@ -93,14 +98,13 @@ public class MServerController extends AbstractController {
 
 	private void skip() throws IOException {
 		ifRunning(mp -> {
-			OutputStream out = mp.getOutputStream();
-			out.write('\n');
-			out.flush();
+			mp.write("{\"command\": [\"quit\"]}");
 		});
 	}
 
 	public MServerController(Mapping mapping, MServerSocket socketHandler, File folder, List<String> extraPlayerArgs) {
 		super(mapping);
+		this.store = new MServerHistoryStore(mapping);
 		this.socketHandler = socketHandler;
 		this.root = folder;
 		this.extraPlayerArgs = ImmutableList.copyOf(extraPlayerArgs);
@@ -167,14 +171,16 @@ public class MServerController extends AbstractController {
 	 * Before: mplayer.isAbsent(). After: mplayer.isPresent()
 	 */
 	private void playNow(Item item) throws IOException {
-		System.out.println("mplayer -vc dummy -vo null " + Joiner.on(' ').join(extraPlayerArgs)
-				+ item.file);
-		this.mplayer = Optional.of(Runtime.getRuntime().exec(
-				ImmutableList.<String>builder()
-						.add("mplayer", "-vc", "dummy", "-vo", "null")
-						.addAll(extraPlayerArgs)
-						.add(item.file.getPath())
-						.build()
+		ImmutableList<String> commandLine = ImmutableList.<String>builder()
+				.add("mpv", "--input-ipc-server=" + SOCKET, "--vo=null")
+				.addAll(extraPlayerArgs)
+				.add(item.file.getPath())
+				.build();
+
+		System.err.println("$ " + String.join(" ", commandLine));
+
+		this.mpvProcess = Optional.of(Runtime.getRuntime().exec(
+				commandLine
 						.toArray(new String[0])));
 		updateStore(s -> {
 			Optional<File> playingBefore = s.getNowPlaying();
@@ -190,39 +196,144 @@ public class MServerController extends AbstractController {
 		});
 	}
 
+	@ToString
+	static class MpvMessage {
+		public String event;
+		public Long id;
+		public String name;
+		public String data;
+		public String error;
+		public Long request_id;
+	}
+
+	private class SocketClient {
+		SocketChannel mpvSocket = openMpvSocketConnection();
+		BufferedReader reader = openReader(mpvSocket);
+		long nextRequestId = 1;
+		Long durationProperty;
+		Long positionProperty;
+		double duration = 0;
+		double position = 0;
+
+		void init() throws IOException {
+			duration = 0;
+			position = 0;
+
+			// Duration is not supposed to change, but I've sometimes seen it being null when querying too soon,
+			// so we "observe" it to be sure we eventually get the correct value.
+			durationProperty = (nextRequestId++);
+			write("{\"command\":[\"observe_property_string\", "+ durationProperty +", \"duration\"]}");
+
+			positionProperty = (nextRequestId++);
+			write("{\"command\":[\"observe_property_string\", "+ positionProperty +", \"playback-time\"]}");
+		}
+
+		void poll() throws IOException {
+			String line = null;
+			try {
+				line = reader.readLine(); // blocking
+			} catch (IOException ioX) {
+				System.err.println(ioX.getMessage());
+				// likely MPV terminated, let's reconnect
+			}
+			if (line == null || !mpvProcess.get().isAlive()) {
+				mpvProcess = Optional.empty();
+				if (pop()) {
+					reconnect();
+				}
+				return;
+			}
+					/* example messages:
+					
+					{"event":"property-change","id":1,"name":"playback-time","data":39.040266}
+					{"request_id":0,"error":"invalid parameter"}
+					{"data":"374.955828","request_id":12,"error":"success"}
+					 */
+			var message = mapping.readValue(line, MpvMessage.class);
+			if (positionProperty.equals(message.id)) {
+				position = (message.data == null) ? 0 : Double.parseDouble(message.data);
+			} else if (durationProperty.equals(message.id)) {
+				duration =  (message.data == null) ? 0 : Double.parseDouble(message.data);
+			} else {
+				System.err.println(line);
+				return;
+			}
+
+			updateStore(s -> s.setGlobalState(new GlobalState(
+					s.getGlobalState().state(),
+					position,
+					duration)));
+		}
+
+		void close() {
+			tryClose(mpvSocket);
+			mpvSocket = null;
+			reader = null;
+		}
+
+		void reconnect() throws IOException {
+			RuntimeException lastError = null;
+			int tries = 0;
+			while (tries < 5) {
+				try {
+					close();
+
+					mpvSocket = openMpvSocketConnection();
+					reader = openReader(mpvSocket);
+					init();
+					return;
+				} catch (IOException e) {
+					tries++;
+					lastError = new RuntimeException(e);
+					System.err.println("Socket re-connection attempt " + tries + " failed with " + e);
+					Uninterruptibles.sleepUninterruptibly(Duration.ofMillis(500));
+				}
+			}
+			System.err.println("Giving up re-connection after " + tries + " attempts");
+			throw lastError;
+		}
+
+		private void write(String string) throws IOException {
+			System.err.println("> "+ string);
+			mpvSocket.write(ByteBuffer.wrap((string + "\n").getBytes(StandardCharsets.UTF_8)));
+		}
+	}
+
+	private static SocketChannel openMpvSocketConnection() {
+		RuntimeException lastError = null;
+		int tries = 0;
+		while (tries < 5) {
+			try {
+				return SocketChannel.open(UnixDomainSocketAddress.of(SOCKET));
+			} catch (IOException e) {
+				tries++;
+				lastError = new RuntimeException(e);
+				System.err.println("Socket connection attempt " + tries +" failed with "+ e);
+				Uninterruptibles.sleepUninterruptibly(Duration.ofMillis(500));
+			}
+		}
+		System.err.println("Giving up connection after "+ tries +" attempts");
+		throw lastError;
+	}
+
+	private static BufferedReader openReader(SocketChannel channel) {
+		return new BufferedReader(Channels.newReader(channel, StandardCharsets.UTF_8));
+	}
+
 	private void startStatusThread() {
 		new Thread(() -> {
-			BufferedReader r = null;
+			SocketClient client = new SocketClient();
 			try {
-				r = new BufferedReader(new InputStreamReader(mplayer.get().getInputStream()));
+				client.init();
+				mpvClient = Optional.of(client);
 				while (isRunning()) {
-					String line = r.readLine(); // blocking
-					if (line == null || !mplayer.get().isAlive()) {
-						mplayer = Optional.empty();
-						if (pop()) {
-							tryClose(r);
-							r = new BufferedReader(new InputStreamReader(mplayer.get().getInputStream()));
-							continue;
-						} else {
-							return;
-						}
-					}
-
-					Matcher m = STATUS_LINE.matcher(line);
-					if (m.matches()) {
-						updateStore(s -> s.setGlobalState(new GlobalState(
-								s.getGlobalState().state(),
-								Double.parseDouble(m.group(1)),
-								Double.parseDouble(m.group(3)),
-								m.group(2))));
-					} else {
-						System.out.println(line);
-					}
+					client.poll();
 				}
 			} catch (IOException e) {
 				e.printStackTrace();
 			} finally {
-				tryClose(r);
+				client.close();
+				mpvClient = Optional.empty();
 			}
 		}).start();
 	}
@@ -254,31 +365,31 @@ public class MServerController extends AbstractController {
 		}
 	}
 
-	private void tryClose(BufferedReader r) {
+	private void tryClose(AutoCloseable r) {
 		try {
 			if (r != null) {
 				r.close();
 			}
-		} catch (IOException e) {
+		} catch (Exception e) {
 			e.printStackTrace();
 		}
 	}
 
 	private synchronized boolean isRunning() {
-		return mplayer.isPresent();
+		return mpvProcess.isPresent();
 	}
 
 	private interface ThrowingProcessConsumer {
-		void accept(Process process) throws IOException;
+		void accept(SocketClient socketClient) throws IOException;
 	}
 
 	/**
 	 * Pass the MPlayer Process, if available, to the given consumer.
 	 */
 	private void ifRunning(ThrowingProcessConsumer consumer) throws IOException {
-		Optional<Process> copy;
+		Optional<SocketClient> copy;
 		synchronized (this) {
-			copy = this.mplayer;
+			copy = this.mpvClient;
 		}
 		if (copy.isPresent()) {
 			consumer.accept(copy.get());

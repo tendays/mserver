@@ -1,5 +1,8 @@
 package org.gamboni.mserver.data;
 
+import lombok.RequiredArgsConstructor;
+import org.gamboni.mserver.tech.Mapping;
+import org.gamboni.tech.history.event.NewStateEvent;
 import org.gamboni.tech.web.ws.BroadcastTarget;
 
 import java.io.File;
@@ -7,8 +10,10 @@ import java.util.*;
 
 import static java.util.stream.Collectors.toMap;
 
+@RequiredArgsConstructor
 public class DirectoryState {
 
+    private final Mapping mapping;
     private final Set<BroadcastTarget> listeners = new LinkedHashSet<>();
 
     public Set<BroadcastTarget> getClients() {
@@ -45,12 +50,13 @@ public class DirectoryState {
                         e -> e.getValue().state()));
     }
 
-    public List<FileState> getUpdatesSince(long stamp) {
+    public List<NewStateEvent<PlayState>> getUpdatesSince(long stamp) {
         return fileState
                 .entrySet()
                 .stream()
                 .filter(e -> e.getValue().stamp > stamp)
-                .map(e -> new FileState(e.getKey(), e.getValue().state()))
+                .map(e -> new NewStateEvent<>("",
+                        mapping.fileToPath(e.getKey()), e.getValue().state()))
                 .toList();
     }
 }

@@ -4,7 +4,6 @@
 package org.gamboni.mserver;
 
 import lombok.extern.slf4j.Slf4j;
-import org.gamboni.mserver.data.Item;
 import org.gamboni.mserver.tech.Mapping;
 import org.gamboni.mserver.ui.DirectoryPage;
 import org.gamboni.mserver.ui.Style;
@@ -54,7 +53,7 @@ public class MServer {
 		this.controller = new MServerController(mapping, socketHandler, root, extraParams);
 
 		var style = new Style();
-		this.page = new DirectoryPage(controller, mapping, style, socketHandler);
+		this.page = new DirectoryPage(controller, mapping, style);
 	}
 	
 	private void run() {
@@ -81,13 +80,15 @@ public class MServer {
 			return notFound(res, "Could not list files under " + childFolder);
 		}
 
+		DirectorySnapshot directorySnapshot = controller.getStore().getSnapshot(childFolder);
 		return page.render(new DirectoryPage.Data(
-				controller.getStore().getSnapshot(childFolder),
+				directorySnapshot,
 				childFolder,
 				Stream.of(files)
 						.sorted(Comparator.comparing(file -> file.getName().toLowerCase()))
-						.map(Item::new)
-						.toList())).toString();
+						.map(file -> directorySnapshot.getItem(file))
+						.toList(),
+				controller.getStore().getGlobalState().state())).toString();
 	}
 
 	private String notFound(Response res, String error) {

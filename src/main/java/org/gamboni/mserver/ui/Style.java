@@ -1,5 +1,6 @@
 package org.gamboni.mserver.ui;
 
+import org.gamboni.mserver.data.PlayState;
 import org.gamboni.mserver.tech.SparkStyle;
 
 public class Style extends SparkStyle {
@@ -12,12 +13,8 @@ public class Style extends SparkStyle {
     public ClassName label;
     public ClassName thumb;
 
-    /** An item with this style is queued for playing at a later time. */
-    public ClassName queued;
-    /** An item with this style is currently playing (or paused). */
-    public ClassName nowPlaying;
-
     private static final String topHeight = "6em";
+    public static final EnumToClassName<PlayState> states = new OneCssClassPerEnumValue<>(PlayState.class);
 
     @Override
     public String render() {
@@ -60,24 +57,24 @@ public class Style extends SparkStyle {
                         a.width("100%"),
                         a.backgroundColor("#eeea"))
                 +
-                rule(nowPlaying,
+                rule(states.get(PlayState.PAUSED).or(states.get(PlayState.PLAYING)),
                         a.backgroundColor("#fcc"))
                 +
-                rule(nowPlaying.after(),
+                rule(states.get(PlayState.PAUSED).or(states.get(PlayState.PLAYING)).after(),
                         Position.ABSOLUTE,
                         a.top("0px"),
                         a.right("0px"),
                         a.backgroundColor("#fff"),
-                        a.content("\"🎶\""))
+                        a.content("🎶"))
                 +
-                rule(queued,
+                rule(states.get(PlayState.QUEUED),
                         a.backgroundColor("#ccf"))
                 +
-                rule(queued.after(),
+                rule(states.get(PlayState.QUEUED).after(),
                         Position.ABSOLUTE,
                         a.top("0px"),
                         a.right("0px"),
-                        a.content("\"⏳\""),
+                        a.content("⏳"),
                         a.backgroundColor("#ccfa"))
                 +
                 rule(thumb,
