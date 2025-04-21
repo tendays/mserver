@@ -4,27 +4,31 @@ import com.google.common.collect.Iterables;
 import org.gamboni.mserver.DirectorySnapshot;
 import org.gamboni.mserver.DirectorySnapshot.ItemSnapshot;
 import org.gamboni.mserver.MServerController;
-import org.gamboni.mserver.data.JsFrontEndState;
-import org.gamboni.mserver.data.JsGetStatus;
-import org.gamboni.mserver.data.JsGlobalState;
-import org.gamboni.mserver.data.PlayState;
+import org.gamboni.mserver.data.*;
 import org.gamboni.mserver.tech.Mapping;
 import org.gamboni.mserver.tech.SparkDynamicPage;
-import org.gamboni.mserver.tech.ui.TimeBasedTemplate;
+import org.gamboni.mserver.tech.ui.NumberViewElementTemplate;
 import org.gamboni.tech.history.Stamped;
 import org.gamboni.tech.history.ui.EnumViewElementTemplate;
 import org.gamboni.tech.web.js.JavaScript;
+import org.gamboni.tech.web.js.JsType;
 import org.gamboni.tech.web.ui.FavIconResource;
 import org.gamboni.tech.web.ui.Html;
 import org.gamboni.tech.web.ui.IdentifiedElementRenderer;
-import org.gamboni.tech.web.ui.Value;
+import org.gamboni.tech.web.ui.value.DateValue;
+import org.gamboni.tech.web.ui.value.Value;
 
 import java.io.File;
 import java.util.List;
+import java.util.function.Function;
 
 import static org.gamboni.mserver.data.PlayState.PAUSED;
+import static org.gamboni.mserver.data.PlayState.PLAYING;
 import static org.gamboni.mserver.data.PlayState.STOPPED;
-import static org.gamboni.tech.web.js.JavaScript.*;
+import static org.gamboni.tech.web.js.JavaScript.JsExpression;
+import static org.gamboni.tech.web.js.JavaScript.JsHtmlElement;
+import static org.gamboni.tech.web.js.JavaScript.JsStatement;
+import static org.gamboni.tech.web.js.JavaScript.literal;
 import static org.gamboni.tech.web.ui.Html.attribute;
 import static org.gamboni.tech.web.ui.Html.escape;
 
@@ -33,7 +37,7 @@ public class DirectoryPage extends SparkDynamicPage<DirectoryPage.Data> {
     private final IdentifiedElementRenderer<ItemSnapshot> itemTemplate;
 
     // TODO see if we can put all the information in DirectorySnapshot?
-    public record Data(DirectorySnapshot snapshot, File folder, Iterable<ItemSnapshot> files, PlayState globalState) implements Stamped {
+    public record Data(DirectorySnapshot snapshot, File folder, Iterable<ItemSnapshot> files, GlobalState globalState) implements Stamped {
         @Override
         public long stamp() {
             return snapshot.stamp();
@@ -44,7 +48,7 @@ public class DirectoryPage extends SparkDynamicPage<DirectoryPage.Data> {
     private final Style style;
 
     public final IdentifiedElementRenderer<PlayState> status;
-    private final TimeBasedTemplate progress;
+    private final /*TimeBasedTemplate*/ IdentifiedElementRenderer<JsType<? extends GlobalState>> progress;
 
     private final JavaScript.JsGlobal playState = new JavaScript.JsGlobal("playState");
     private final JavaScript.JsGlobal directory = new JavaScript.JsGlobal("directory");
@@ -54,15 +58,33 @@ public class DirectoryPage extends SparkDynamicPage<DirectoryPage.Data> {
                 .set(value.plus("%"));
     }
 
+    public static final Function<Class<? extends GlobalState>, PlayState> PLAY_STATE_FUNCTION =
+            eventType -> {
+        if (eventType == PausedGlobalState.class) {
+            return PAUSED;
+        } else if (eventType == PlayingGlobalState.class) {
+            return PLAYING;
+        } else if (eventType == StoppedGlobalState.class) {
+            return STOPPED;
+        } else {
+            throw new IllegalStateException(eventType.getSimpleName());
+        }
+    };
+
     public DirectoryPage(MServerController controller, Mapping mapping, Style style) {
         this.controller = controller;
         this.style = style;
         this.status = EnumViewElementTemplate
                 .<PlayState, PlayState>ofStaticBase(PlayState.class, __ -> Value.of("global"), Value::of,
-                        p())
-                .withEventMatcher((event, callback) -> callback.expectSameType(new JsGlobalState(event)),
-                        __ -> literal("global"),
-                        JsGlobalState::state)
+                    p())
+                .withEventMatcher((event, callback) ->
+                    new EnumViewElementTemplate.EventData(literal("global"),
+                            Value.of(PLAY_STATE_FUNCTION.apply(
+                            callback.expectOneOf(
+                                    PausedGlobalStateValues.of(event),
+                                    PlayingGlobalStateValues.of(event),
+                                    StoppedGlobalStateValues.of(event))
+                                    .getBackendType()))))
                 .withContents(Enum::name)
                 .addTo(this);
 
@@ -87,42 +109,37 @@ public class DirectoryPage extends SparkDynamicPage<DirectoryPage.Data> {
                 .withStyle(Style.states)
                 .addTo(this);
 
-        stateHandler.addHandler((event, matcher) -> matcher.expectSameType(new JsGlobalState(event)),
-                event -> playState.set(JsFrontEndState.literal(
-                        event.state(),
-                        event.position(),
-                        getTime().divide(1000).minus(event.position()),
-                        event.duration()
-                )));
-
         // ALSO: put the 'key' into Event and get rid of 'matcher'?
         // (OR less violent, introduce interface KeyedEvent and simpler addHandler API overload)
 
-        // to easily access properties
-        var typedStatus = new JsFrontEndState(this.playState);
-
-        this.progress = TimeBasedTemplate.create(div(List.of(style.progress)),
-                div -> _if(typedStatus.state().eq(literal(STOPPED)),
-                        setProgressBarPercent(div, literal(0)))
-                        ._elseIf(typedStatus.state().eq(literal(PAUSED)),
-                                setProgressBarPercent(div, typedStatus.pausedPosition()
-                                        .times(100)
-                                        .divide(typedStatus.duration()))
-                        )
-                        ._else( // playing
-                                setProgressBarPercent(div, getTime().divide(1000).minus(typedStatus.playStarted())
-                                        .times(100)
-                                        .divide(typedStatus.duration())))
+        this.progress = NumberViewElementTemplate.ofStaticBase(div(List.of(style.progress)))
+                .<JsType<? extends GlobalState>>withEventMatcher((event, cb) ->
+                        cb.expectOneOf(
+                                StoppedGlobalStateValues.of(event),
+                                PlayingGlobalStateValues.of(event),
+                                PausedGlobalStateValues.of(event)))
+                .withStyle((css, value) -> {
+                    if (value instanceof PausedGlobalStateValues paused) {
+                        return css.width(
+                                paused.position().divide(paused.duration()));
+                    } else if (value instanceof PlayingGlobalStateValues playing) {
+                        return css.width(
+                                DateValue.now().minus(playing.started()).divide(playing.duration())
+                        );
+                    } else /* if (value instanceof StoppedGlobalStateValues) */ {
+                        return css.width("0");
+                    }
+                }
         ).addTo(this);
 
         controller.addTo(this);
         addToScript(
-                directory.declare(literal("")),
-                playState.declare(JsFrontEndState.literal(
+                directory.declare(literal(""))/*,
+                playState.declare(FrontEndStateValues.literal(
                         literal(STOPPED),
                         literal(0),
                         literal(0),
-                        literal(0))));
+                        literal(0)))*/);
 
         addToOnLoad(onLoad ->
                 directory.set(
@@ -132,7 +149,7 @@ public class DirectoryPage extends SparkDynamicPage<DirectoryPage.Data> {
 
     @Override
     protected JsExpression helloValue(JsExpression stamp) {
-        return JsGetStatus.literal(directory, stamp);
+        return GetStatusValues.literal(directory, stamp);
     }
 
     public Html render(Data data) {
@@ -144,9 +161,10 @@ public class DirectoryPage extends SparkDynamicPage<DirectoryPage.Data> {
                                         button("Skip", controller.skip),
                                         escape(" "),
                                         button("Stop", controller.stop)),
-                                status.render(data.globalState()),
+                                status.render(PLAY_STATE_FUNCTION.apply(
+                                        data.globalState().getClass())),
                                 div(List.of(style.progressBar),
-                                        progress.render())),
+                                        progress.render(GlobalStateValues.of(data.globalState())    ))),
                         ul(style.grid,
                                 Iterables.filter(
                                 data.files,

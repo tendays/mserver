@@ -14,7 +14,15 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
 
-import static org.gamboni.tech.web.js.JavaScript.*;
+import static org.gamboni.tech.web.js.JavaScript.Fun;
+import static org.gamboni.tech.web.js.JavaScript.JsExpression;
+import static org.gamboni.tech.web.js.JavaScript.JsStatement;
+import static org.gamboni.tech.web.js.JavaScript._if;
+import static org.gamboni.tech.web.js.JavaScript.lambda;
+import static org.gamboni.tech.web.js.JavaScript.let;
+import static org.gamboni.tech.web.js.JavaScript.literal;
+import static org.gamboni.tech.web.js.JavaScript.newXMLHttpRequest;
+import static org.gamboni.tech.web.js.JavaScript.seq;
 
 /**
  * @author tendays
@@ -52,7 +60,6 @@ public class AbstractController {
 		jsProxy.add(
 				fun.declare(
 						let(newXMLHttpRequest(),
-								JsExpression::of,
 								r -> seq(
 										r.invoke("open",
 												literal("POST"),
@@ -74,7 +81,6 @@ public class AbstractController {
 		jsProxy.add(
 				fun.declare(arg ->
 						let(newXMLHttpRequest(),
-								JavaScript.JsExpression::of,
 								r -> seq(
 										r.invoke("open",
 												literal("POST"),
@@ -84,7 +90,7 @@ public class AbstractController {
 		
 		Spark.post("/"+ name, (req, res) -> json(res, serviceBody.execute(req.body())));
 		
-		return arg -> s -> name +"("+ arg.format(s) +")";
+		return fun::invoke;
 	}
 	
 	protected CallbackServiceProxy getService(String name, ServiceBody serviceBody) {
@@ -92,15 +98,14 @@ public class AbstractController {
 		jsProxy.add(
 				fun.declare(callback ->
 						let(newXMLHttpRequest(),
-								JavaScript.JsExpression::of,
 								r -> seq(
 										r.dot("onreadystatechange").set(
 												lambda(
 														_if(
 																r.dot("readyState").eq(literal(4))
 																		.and(r.dot("status").eq(literal(200))),
-																(JsExpression) (s -> callback.format(s) + "(" +
-																		r.dot("responseText").format(s) + ")")
+																JavaScript.invoke(callback,
+																		r.dot("responseText"))
 														)
 												)
 										),
@@ -113,9 +118,8 @@ public class AbstractController {
 
 		String resultVariable = "result";
 
-		return callbackBody -> s -> name + "(" +
-				lambda(resultVariable, callbackBody)
-						.format(s) +")";
+		return callbackBody ->
+				fun.invoke(lambda(resultVariable, callbackBody));
 	}
 
 	public void addTo(AbstractPage<?> page) {

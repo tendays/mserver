@@ -18,16 +18,16 @@ public abstract class SparkDynamicPage<T extends Stamped> extends SparkPage<T> i
         @Override
         protected JavaScript.JsExpression helloValue(JavaScript.JsExpression stamp) {
             // hack alert: we don't evaluate outer helloValue() directly, but only when format() is called.
-            // This method s called from the SparkDynamicPage constructor when the socket is initialised,
+            // This method is called from the SparkDynamicPage constructor when the socket is initialised,
             // and this hack allows the SparkDynamicPage to initialise.
-            return s -> SparkDynamicPage.this.helloValue(stamp).format(s);
+            return JavaScript.dynamicExpression(() -> SparkDynamicPage.this.helloValue(stamp));
         }
     };
 
-    private final JsPersistentWebSocket socket = new JsPersistentWebSocket(stateHandler);
+    private final JsPersistentWebSocket.Added socket;
 
     protected SparkDynamicPage() {
-        socket.addTo(this);
+        socket = new JsPersistentWebSocket(stateHandler).addTo(this);
         addToOnLoad(onLoad -> stateHandler.init(onLoad.addParameter(
                 data -> literal(data.stamp()))));
     }

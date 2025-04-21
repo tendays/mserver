@@ -17,6 +17,7 @@ mainClassName = 'org.gamboni.mserver.MServer'
 
 dependencies {
     var techVersion = '0.0.4-SNAPSHOT'
+    var jacksonVersion = '2.16.1'
 
     compileOnly 'org.projectlombok:lombok:1.18.30'
 
@@ -28,7 +29,8 @@ dependencies {
     implementation 'org.gamboni:tech-sparkjava:' + techVersion
     implementation 'org.gamboni:tech-history:' + techVersion
 
-    implementation 'com.fasterxml.jackson.core:jackson-core:2.16.1'
-    implementation 'com.fasterxml.jackson.core:jackson-databind:2.16.1'
+    implementation 'com.fasterxml.jackson.core:jackson-core:' + jacksonVersion
+    implementation 'com.fasterxml.jackson.core:jackson-databind:' + jacksonVersion
+    implementation 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310:' + jacksonVersion
 }
 

@@ -88,7 +88,7 @@ public class MServer {
 						.sorted(Comparator.comparing(file -> file.getName().toLowerCase()))
 						.map(file -> directorySnapshot.getItem(file))
 						.toList(),
-				controller.getStore().getGlobalState().state())).toString();
+				controller.getStore().getGlobalState())).toString();
 	}
 
 	private String notFound(Response res, String error) {

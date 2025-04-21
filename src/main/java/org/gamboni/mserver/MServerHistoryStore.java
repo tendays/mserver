@@ -5,6 +5,7 @@ import lombok.RequiredArgsConstructor;
 import org.gamboni.mserver.data.DirectoryState;
 import org.gamboni.mserver.data.GlobalState;
 import org.gamboni.mserver.data.PlayState;
+import org.gamboni.mserver.data.PlayingGlobalState;
 import org.gamboni.mserver.tech.Mapping;
 import org.gamboni.tech.history.InMemoryHistoryStore;
 import org.gamboni.tech.history.event.Event;
@@ -76,11 +77,14 @@ public class MServerHistoryStore extends InMemoryHistoryStore<
         }
 
         public void setGlobalState(GlobalState newState) {
-            if (globalState.state() != newState.state() ||
+            // eek! can we make this method nicer? Likely with methods in the GlobalState interface?
+            if (globalState.getClass() != newState.getClass() ||
 
             // when starting a new item duration switches from 0 to actual value;
             // we want to notify the front ends at that time
-            globalState.duration() != newState.duration()) {
+                    (globalState instanceof PlayingGlobalState a &&
+                            newState instanceof PlayingGlobalState b &&
+                            a.duration() != b.duration())) {
                 clients().forEach(client -> notifications.put(client, newState));
             }
 

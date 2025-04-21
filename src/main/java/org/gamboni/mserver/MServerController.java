@@ -11,8 +11,10 @@ import lombok.ToString;
 import org.gamboni.mserver.data.GlobalState;
 import org.gamboni.mserver.data.Item;
 import org.gamboni.mserver.data.PlayState;
+import org.gamboni.mserver.data.PlayingGlobalState;
 import org.gamboni.mserver.tech.AbstractController;
 import org.gamboni.mserver.tech.Mapping;
+import org.gamboni.mserver.ui.DirectoryPage;
 import org.gamboni.tech.history.HistoryStore;
 import org.gamboni.tech.web.js.JavaScript.JsExpression;
 
@@ -25,6 +27,7 @@ import java.nio.channels.Channels;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -63,7 +66,6 @@ public class MServerController extends AbstractController {
 	public final JsExpression pause = service("pause", () -> {
 		ifRunning(mp -> {
 			mp.write("{\"command\": [\"cycle\", \"pause\"]}");
-			updateStore(s -> s.setGlobalState(s.getGlobalState().togglePaused()));
 		});
 		return "ok";
 	});
@@ -118,7 +120,9 @@ public class MServerController extends AbstractController {
 					System.out.println("Queued " + item);
 					var notifications = store.update(session -> {
 						session.setFileState(ancestors(item.file),
-								pointer -> store.isNowPlaying(pointer) ? store.getGlobalState().state() : PlayState.QUEUED);
+								pointer -> store.isNowPlaying(pointer) ?
+										DirectoryPage.PLAY_STATE_FUNCTION.apply(
+										store.getGlobalState().getClass()) : PlayState.QUEUED);
 					});
 
 					broadcastState(notifications);
@@ -192,7 +196,7 @@ public class MServerController extends AbstractController {
 						pointer -> isQueued(pointer) ? PlayState.QUEUED : PlayState.STOPPED));
 			s.setFileState(ancestors(item.file), PlayState.PLAYING);
 
-			s.setGlobalState(GlobalState.PLAYING);
+			s.setGlobalState(new PlayingGlobalState(Instant.now(), 0));
 		});
 	}
 
@@ -244,24 +248,23 @@ public class MServerController extends AbstractController {
 				return;
 			}
 					/* example messages:
-					
+
 					{"event":"property-change","id":1,"name":"playback-time","data":39.040266}
 					{"request_id":0,"error":"invalid parameter"}
 					{"data":"374.955828","request_id":12,"error":"success"}
 					 */
 			var message = mapping.readValue(line, MpvMessage.class);
 			if (positionProperty.equals(message.id)) {
-				position = (message.data == null) ? 0 : Double.parseDouble(message.data);
+				position = (message.data == null) ? 0 : Double.parseDouble(message.data) * 1000;
 			} else if (durationProperty.equals(message.id)) {
-				duration =  (message.data == null) ? 0 : Double.parseDouble(message.data);
+				duration =  (message.data == null) ? 0 : Double.parseDouble(message.data) * 1000;
 			} else {
 				System.err.println(line);
 				return;
 			}
 
-			updateStore(s -> s.setGlobalState(new GlobalState(
-					s.getGlobalState().state(),
-					position,
+			updateStore(s -> s.setGlobalState(new PlayingGlobalState(
+					Instant.now().minusMillis((long) position),
 					duration)));
 		}
 
