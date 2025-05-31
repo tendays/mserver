@@ -4,33 +4,29 @@
 package org.gamboni.mserver;
 
 import com.google.common.collect.AbstractIterator;
-import com.google.common.collect.ImmutableList;
-import com.google.common.util.concurrent.Uninterruptibles;
 import lombok.Getter;
-import lombok.ToString;
 import org.gamboni.mserver.data.GlobalState;
 import org.gamboni.mserver.data.Item;
+import org.gamboni.mserver.data.PausedGlobalState;
 import org.gamboni.mserver.data.PlayState;
 import org.gamboni.mserver.data.PlayingGlobalState;
 import org.gamboni.mserver.tech.AbstractController;
 import org.gamboni.mserver.tech.Mapping;
+import org.gamboni.mserver.tech.media.MediaPlayer;
+import org.gamboni.mserver.tech.media.MpvMediaPlayer;
 import org.gamboni.mserver.ui.DirectoryPage;
 import org.gamboni.tech.history.HistoryStore;
 import org.gamboni.tech.web.js.JavaScript.JsExpression;
 
-import java.io.BufferedReader;
 import java.io.File;
-import java.io.IOException;
-import java.net.UnixDomainSocketAddress;
-import java.nio.ByteBuffer;
-import java.nio.channels.Channels;
-import java.nio.channels.SocketChannel;
-import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.Executor;
+import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 import static com.google.common.base.Preconditions.checkNotNull;
@@ -42,13 +38,30 @@ import static org.gamboni.tech.web.js.JavaScript.literal;
  */
 public class MServerController extends AbstractController {
 
-	private static final String SOCKET = "/tmp/mserver";
+	/* Design notes: also refer to `MpvMediaPlayer`.
+	 * The controller is responsible for handling the play queue, and acting
+	 * as intermediary between the front end and the media player.
+	 * As it sits between two event sources, care must be taken with concurrency.
+	 * Using synchronized methods would create deadlocks (if sending a request to play
+	 * a file and blocking while waiting for the response, while the media player
+	 * is trying to notify this of a state change). So we follow the idea of treating
+	 * the controller like the browser, with an event queue (implemented with a
+	 * single-threaded executor). Then events originating from the media player
+	 * are never blocking, they are just added to the end of the event queue.
+	 * (The event queue (which should be processed as fast as the CPU permits)
+	 * should not be confused with the play queue.)
+	 */
 
 	final File root;
-	private final ImmutableList<String> extraPlayerArgs;
 	private final MServerSocket socketHandler;
-	private Optional<Process> mpvProcess = Optional.empty();
-	private Optional<SocketClient> mpvClient = Optional.empty();
+	private final MediaPlayer mediaPlayer;
+
+	private final Executor executor = new ThreadPoolExecutor(
+			1,
+			1, // important: to make this a *sequential* executor
+			Long.MAX_VALUE,
+			TimeUnit.SECONDS,
+			new LinkedBlockingDeque<>());
 
 	@Getter
 	private final MServerHistoryStore store;
@@ -64,128 +77,160 @@ public class MServerController extends AbstractController {
 	private final ServiceProxy shuffle;
 
 	public final JsExpression pause = service("pause", () -> {
-		ifRunning(mp -> {
-			mp.write("{\"command\": [\"cycle\", \"pause\"]}");
-		});
+		pause();
 		return "ok";
 	});
 
-	public final JsExpression skip = service("skip", () -> {
-		skip();
-		return "ok";
-	});
+	public final JsExpression skip;
 
 	public final JsExpression stop = service("stop", () -> {
 		stop();
 		return "ok";
 	});
 
-	private void stop() throws IOException {
-		// stop shuffling, ...
-		this.shuffleFolder = Optional.empty();
-
-		// ... clear the queue, ...
-		updateStore(session -> {
-			var iterator = queue.iterator();
-			while (iterator.hasNext()) {
-				var item = iterator.next();
-				session.setFileState(ancestors(item.file), PlayState.STOPPED);
-				iterator.remove();
-			}
-		});
-
-		// ... and end the current song
-		skip();
-	}
-
-	private void skip() throws IOException {
-		ifRunning(mp -> {
-			mp.write("{\"command\": [\"quit\"]}");
-		});
-	}
-
 	public MServerController(Mapping mapping, MServerSocket socketHandler, File folder, List<String> extraPlayerArgs) {
 		super(mapping);
+		this.mediaPlayer = new MpvMediaPlayer(mapping, extraPlayerArgs);
 		this.store = new MServerHistoryStore(mapping);
 		this.socketHandler = socketHandler;
 		this.root = folder;
-		this.extraPlayerArgs = ImmutableList.copyOf(extraPlayerArgs);
+		mediaPlayer.setChangeListener(new MediaPlayer.ChangeListener() {
+			@Override
+			public void stopped() {
+				// TODO it's easy to forget the executor.execute. Should somehow expose sensitive variables/methods only to executable tasks
+				// this could be done by wrapping them together with the executor.
+				executor.execute(() -> {
+					if (!queue.isEmpty()) {
+						var item = queue.remove(0);
+						mediaPlayer.playIfIdle(item.file, () -> {
+							// oops: apparently the player started playing something already:
+							// let's put the file back into the queue
+							queue.add(0, item);
+						});
+					} else {
+						shuffleOne().ifPresentOrElse(file ->
+								mediaPlayer.playIfIdle(file,
+										() -> {
+											// ignore: if player is already playing something
+											// we don't need to add shuffled items
+										}), () ->
+								// nothing to shuffle: let's publish the "STOPPED" event downstream
+								updateStore(s -> {
+									s.setGlobalState(GlobalState.STOPPED);
+									Optional<File> playingBefore = s.getNowPlaying();
+									s.clearNowPlaying();
+									// see if we need to remove "playing" status of oldState
+									playingBefore.ifPresent(toRemove ->
+											s.setFileState(ancestors(toRemove),
+													pointer -> isQueued(pointer) ? PlayState.QUEUED : PlayState.STOPPED));
+								}));
+					}
+				});
+			}
+
+			@Override
+			public void playing(Instant started, double duration) {
+				executor.execute(() -> {
+					updateStore(s -> s.setGlobalState(new PlayingGlobalState(
+							started,
+							duration)));
+				});
+			}
+
+			@Override
+			public void paused(double position) {
+				updateStore(s -> {
+					if (s.getGlobalState() instanceof PlayingGlobalState gs) {
+						s.setGlobalState(
+								new PausedGlobalState(position, gs.duration()));
+					} else {
+						throw new IllegalStateException(s.getGlobalState().toString()); // not nice
+					}
+				});
+			}
+		});
 		socketHandler.setController(this);
 
 		this.play = service("play", fileName -> {
-			synchronized (this) {
+			executor.execute(() -> {
 				Item item = new Item(mapping.pathToFile(fileName));
-				if (isRunning()) {
+
+				playNow(item, () -> {
 					queue.add(item);
 					System.out.println("Queued " + item);
 					var notifications = store.update(session -> {
 						session.setFileState(ancestors(item.file),
 								pointer -> store.isNowPlaying(pointer) ?
 										DirectoryPage.PLAY_STATE_FUNCTION.apply(
-										store.getGlobalState().getClass()) : PlayState.QUEUED);
+												store.getGlobalState().getClass()) : PlayState.QUEUED);
 					});
 
 					broadcastState(notifications);
-				} else {
-					playNow(item);
-					startStatusThread();
-				}
-			}
+				});
+			});
+			return "ok";
+		});
+
+		this.skip = service("skip", () -> {
+			mediaPlayer.stop();
 			return "ok";
 		});
 
 		this.shuffle = service("shuffle", folderName -> {
-			synchronized (this) {
-				if (isRunning()) {
-					// act like a toggle: if something is playing, stop it; will play on next
-					// request
+			executor.execute(() -> {
+				if (shuffleFolder.isPresent()) {
+					shuffleFolder = Optional.empty();
 					stop();
-					return "ok";
 				} else {
 					this.shuffleFolder = Optional.of(mapping.pathToFile(folderName));
-					if (shuffleOne()) {
-						startStatusThread();
-						return "ok";
-					} else {
-						return "ko";
-					}
+					shuffleOne().ifPresent(f -> {
+						playNow(new Item(f),
+								() -> stop());
+					});
 				}
+			});
+			return "ok";
+		});
+	}
+
+	private void pause() {
+		mediaPlayer.togglePaused();
+	}
+
+	private void stop() {
+		executor.execute(() -> {
+			// stop shuffling, ...
+			this.shuffleFolder = Optional.empty();
+
+			// ... clear the queue, ...
+			updateStore(session -> {
+				var iterator = queue.iterator();
+				while (iterator.hasNext()) {
+					var item = iterator.next();
+					session.setFileState(ancestors(item.file), PlayState.STOPPED);
+					iterator.remove();
+				}
+			});
+
+			// ... and end the current song
+			mediaPlayer.stop();
+		});
+	}
+
+	private Optional<File> shuffleOne() {
+		return shuffleFolder.flatMap(f -> {
+			File[] files = f.listFiles(file -> new Item(file).isMusic());
+			if (files == null || files.length == 0) {
+				return Optional.empty();
+			} else {
+				return Optional.of(files[(int) (Math.random() * files.length)]);
 			}
 		});
 	}
 
-	private boolean shuffleOne() {
-		return shuffleFolder.map(f -> {
-			File[] files = f.listFiles(file -> new Item(file).isMusic());
-			if (files == null || files.length == 0) {
-				return false;
-			} else {
-				Item item = new Item(files[(int) (Math.random() * files.length)]);
-				try {
-					playNow(item);
-				} catch (IOException e) {
-					throw new RuntimeException(e);
-				}
-				return true;
-			}
-		}).orElse(false);
-	}
+	private void playNow(Item item, Runnable queue) {
+		mediaPlayer.playIfIdle(item.file, queue);
 
-	/**
-	 * Before: mplayer.isAbsent(). After: mplayer.isPresent()
-	 */
-	private void playNow(Item item) throws IOException {
-		ImmutableList<String> commandLine = ImmutableList.<String>builder()
-				.add("mpv", "--input-ipc-server=" + SOCKET, "--vo=null")
-				.addAll(extraPlayerArgs)
-				.add(item.file.getPath())
-				.build();
-
-		System.err.println("$ " + String.join(" ", commandLine));
-
-		this.mpvProcess = Optional.of(Runtime.getRuntime().exec(
-				commandLine
-						.toArray(new String[0])));
 		updateStore(s -> {
 			Optional<File> playingBefore = s.getNowPlaying();
 			s.setNowPlaying(item.file);
@@ -198,205 +243,6 @@ public class MServerController extends AbstractController {
 
 			s.setGlobalState(new PlayingGlobalState(Instant.now(), 0));
 		});
-	}
-
-	@ToString
-	static class MpvMessage {
-		public String event;
-		public Long id;
-		public String name;
-		public String data;
-		public String error;
-		public Long request_id;
-	}
-
-	private class SocketClient {
-		SocketChannel mpvSocket = openMpvSocketConnection();
-		BufferedReader reader = openReader(mpvSocket);
-		long nextRequestId = 1;
-		Long durationProperty;
-		Long positionProperty;
-		double duration = 0;
-		double position = 0;
-
-		void init() throws IOException {
-			duration = 0;
-			position = 0;
-
-			// Duration is not supposed to change, but I've sometimes seen it being null when querying too soon,
-			// so we "observe" it to be sure we eventually get the correct value.
-			durationProperty = (nextRequestId++);
-			write("{\"command\":[\"observe_property_string\", "+ durationProperty +", \"duration\"]}");
-
-			positionProperty = (nextRequestId++);
-			write("{\"command\":[\"observe_property_string\", "+ positionProperty +", \"playback-time\"]}");
-		}
-
-		void poll() throws IOException {
-			String line = null;
-			try {
-				line = reader.readLine(); // blocking
-			} catch (IOException ioX) {
-				System.err.println(ioX.getMessage());
-				// likely MPV terminated, let's reconnect
-			}
-			if (line == null || !mpvProcess.get().isAlive()) {
-				mpvProcess = Optional.empty();
-				if (pop()) {
-					reconnect();
-				}
-				return;
-			}
-					/* example messages:
-
-					{"event":"property-change","id":1,"name":"playback-time","data":39.040266}
-					{"request_id":0,"error":"invalid parameter"}
-					{"data":"374.955828","request_id":12,"error":"success"}
-					 */
-			var message = mapping.readValue(line, MpvMessage.class);
-			if (positionProperty.equals(message.id)) {
-				position = (message.data == null) ? 0 : Double.parseDouble(message.data) * 1000;
-			} else if (durationProperty.equals(message.id)) {
-				duration =  (message.data == null) ? 0 : Double.parseDouble(message.data) * 1000;
-			} else {
-				System.err.println(line);
-				return;
-			}
-
-			updateStore(s -> s.setGlobalState(new PlayingGlobalState(
-					Instant.now().minusMillis((long) position),
-					duration)));
-		}
-
-		void close() {
-			tryClose(mpvSocket);
-			mpvSocket = null;
-			reader = null;
-		}
-
-		void reconnect() throws IOException {
-			RuntimeException lastError = null;
-			int tries = 0;
-			while (tries < 5) {
-				try {
-					close();
-
-					mpvSocket = openMpvSocketConnection();
-					reader = openReader(mpvSocket);
-					init();
-					return;
-				} catch (IOException e) {
-					tries++;
-					lastError = new RuntimeException(e);
-					System.err.println("Socket re-connection attempt " + tries + " failed with " + e);
-					Uninterruptibles.sleepUninterruptibly(Duration.ofMillis(500));
-				}
-			}
-			System.err.println("Giving up re-connection after " + tries + " attempts");
-			throw lastError;
-		}
-
-		private void write(String string) throws IOException {
-			System.err.println("> "+ string);
-			mpvSocket.write(ByteBuffer.wrap((string + "\n").getBytes(StandardCharsets.UTF_8)));
-		}
-	}
-
-	private static SocketChannel openMpvSocketConnection() {
-		RuntimeException lastError = null;
-		int tries = 0;
-		while (tries < 5) {
-			try {
-				return SocketChannel.open(UnixDomainSocketAddress.of(SOCKET));
-			} catch (IOException e) {
-				tries++;
-				lastError = new RuntimeException(e);
-				System.err.println("Socket connection attempt " + tries +" failed with "+ e);
-				Uninterruptibles.sleepUninterruptibly(Duration.ofMillis(500));
-			}
-		}
-		System.err.println("Giving up connection after "+ tries +" attempts");
-		throw lastError;
-	}
-
-	private static BufferedReader openReader(SocketChannel channel) {
-		return new BufferedReader(Channels.newReader(channel, StandardCharsets.UTF_8));
-	}
-
-	private void startStatusThread() {
-		new Thread(() -> {
-			SocketClient client = new SocketClient();
-			try {
-				client.init();
-				mpvClient = Optional.of(client);
-				while (isRunning()) {
-					client.poll();
-				}
-			} catch (IOException e) {
-				e.printStackTrace();
-			} finally {
-				client.close();
-				mpvClient = Optional.empty();
-			}
-		}).start();
-	}
-
-	/**
-	 * Pop the next item from the queue, if any, and play it.
-	 *
-	 * @return true if an item was popped, false if the queue was empty
-	 * @throws IOException
-	 */
-	private synchronized boolean pop() throws IOException {
-		if (!queue.isEmpty()) {
-			Item toPlay = queue.remove(0);
-			playNow(toPlay);
-			return true;
-		} else if (shuffleFolder.isPresent() && shuffleOne()) {
-			return true;
-		} else {
-			updateStore(s -> {
-				s.setGlobalState(GlobalState.STOPPED);
-				Optional<File> playingBefore = s.getNowPlaying();
-				s.clearNowPlaying();
-				// see if we need to remove "playing" status of oldState
-				playingBefore.ifPresent(toRemove ->
-						s.setFileState(ancestors(toRemove),
-								pointer -> isQueued(pointer) ? PlayState.QUEUED : PlayState.STOPPED));
-			});
-			return false;
-		}
-	}
-
-	private void tryClose(AutoCloseable r) {
-		try {
-			if (r != null) {
-				r.close();
-			}
-		} catch (Exception e) {
-			e.printStackTrace();
-		}
-	}
-
-	private synchronized boolean isRunning() {
-		return mpvProcess.isPresent();
-	}
-
-	private interface ThrowingProcessConsumer {
-		void accept(SocketClient socketClient) throws IOException;
-	}
-
-	/**
-	 * Pass the MPlayer Process, if available, to the given consumer.
-	 */
-	private void ifRunning(ThrowingProcessConsumer consumer) throws IOException {
-		Optional<SocketClient> copy;
-		synchronized (this) {
-			copy = this.mpvClient;
-		}
-		if (copy.isPresent()) {
-			consumer.accept(copy.get());
-		}
 	}
 
 	/**

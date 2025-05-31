@@ -24,9 +24,9 @@ import static org.gamboni.tech.web.js.JavaScript.literal;
 import static org.gamboni.tech.web.js.JavaScript.newXMLHttpRequest;
 import static org.gamboni.tech.web.js.JavaScript.seq;
 
-/**
- * @author tendays
+/** A "controller" exposes back-end functionality to the front end.
  *
+ * @author tendays
  */
 public class AbstractController {
 	private final List<ScriptMember> jsProxy = new ArrayList<>();
