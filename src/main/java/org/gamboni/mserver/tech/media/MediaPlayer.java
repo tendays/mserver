@@ -8,7 +8,7 @@ public interface MediaPlayer {
 
     void stop();
 
-    void playIfIdle(File file, Runnable otherwise);
+    void playIfIdle(File file, Runnable playingStarted, Runnable otherwise);
 
     interface ChangeListener {
         public static final ChangeListener NOOP = new ChangeListener() {

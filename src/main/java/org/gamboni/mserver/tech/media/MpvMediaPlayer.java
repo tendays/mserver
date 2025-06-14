@@ -7,6 +7,7 @@ import lombok.ToString;
 import org.gamboni.mserver.tech.Mapping;
 
 import java.io.BufferedReader;
+import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
 import java.net.UnixDomainSocketAddress;
@@ -36,8 +37,7 @@ public class MpvMediaPlayer implements MediaPlayer {
     private final List<String> extraPlayerArgs;
     private final Mapping mapping;
 
-    private Optional<Process> mpvProcess = Optional.empty();
-    private Optional<SocketClient> mpvClient = Optional.empty();
+    private volatile Optional<SocketClient> mpvClient = Optional.empty();
 
     @Setter
     private ChangeListener changeListener = ChangeListener.NOOP;
@@ -49,20 +49,17 @@ public class MpvMediaPlayer implements MediaPlayer {
 
     @Override
     public void togglePaused() {
-        ifRunning(mp -> {
-            mp.write("{\"command\": [\"cycle\", \"pause\"]}");
-        });
+        trySendMessage("{\"command\": [\"cycle\", \"pause\"]}");
     }
 
     @Override
     public void stop() {
-        ifRunning(mp -> {
-            mp.write("{\"command\": [\"quit\"]}");
-        });
+        trySendMessage("{\"command\": [\"quit\"]}");
     }
 
     @Override
-    public synchronized void playIfIdle(File file, Runnable otherwise) {
+    public synchronized void playIfIdle(File file, Runnable playingStarted, Runnable otherwise) {
+        /* Method is synchronized to prevent starting two players at the same time. */
         if (isRunning()) {
             otherwise.run();
         } else {
@@ -75,15 +72,16 @@ public class MpvMediaPlayer implements MediaPlayer {
             System.err.println("$ " + String.join(" ", commandLine));
 
             try {
-                this.mpvProcess = Optional.of(Runtime.getRuntime().exec(
-                        commandLine
-                                .toArray(new String[0])));
+                startStatusThread(Runtime.getRuntime().exec(
+                        commandLine.toArray(new String[0])));
             } catch (IOException e) {
                 throw new RuntimeException("Error starting MPV", e);
             }
+            playingStarted.run();
         }
     }
 
+    /** Event object published by mpv. */
     @ToString
     static class MpvMessage {
         public String event;
@@ -95,18 +93,40 @@ public class MpvMediaPlayer implements MediaPlayer {
     }
 
     private class SocketClient {
-        SocketChannel mpvSocket = openMpvSocketConnection();
-        BufferedReader reader = openReader(mpvSocket);
+        final Process process;
+
+        SocketChannel mpvSocket;
+        BufferedReader reader;
+
         long nextRequestId = 1;
         Long durationProperty;
         Long positionProperty;
+        Long pausedProperty;
         double duration = 0;
         double position = 0;
+        boolean paused = false;
 
-        void init() throws IOException {
-            duration = 0;
-            position = 0;
+        private SocketClient(Process process) {
+            this.process = process;
+        }
 
+        private boolean isConnected() {
+            return reader != null;
+        }
+
+        /** Try connecting to the MPV socket. This command may only be used when we're not connected. */
+        public boolean tryConnecting() {
+            try {
+                this.mpvSocket = openMpvSocketConnection();
+                this.reader = openReader(mpvSocket);
+                init(); // if above was successful…
+                return true;
+            } catch (IOException e) {
+                return false;
+            }
+        }
+
+        private void init() throws IOException {
             // Duration is not supposed to change, but I've sometimes seen it being null when querying too soon,
             // so we "observe" it to be sure we eventually get the correct value.
             durationProperty = (nextRequestId++);
@@ -114,23 +134,25 @@ public class MpvMediaPlayer implements MediaPlayer {
 
             positionProperty = (nextRequestId++);
             write("{\"command\":[\"observe_property_string\", "+ positionProperty +", \"playback-time\"]}");
+
+            pausedProperty = (nextRequestId++);
+            write("{\"command\":[\"observe_property_string\", "+ pausedProperty +", \"pause\"]}");
         }
 
-        void poll() throws IOException {
+        /** Wait for the next event coming from MPV. This command may only be used when the client is connected. */
+        public boolean poll() throws IOException {
             String line = null;
             try {
                 line = reader.readLine(); // blocking
             } catch (IOException ioX) {
                 System.err.println(ioX.getMessage());
-                // likely MPV terminated, let's reconnect
             }
-            if (line == null || !mpvProcess.get().isAlive()) {
-                mpvProcess = Optional.empty();
-                changeListener.stopped();
-                /*if (pop()) {
-                    reconnect();
-                }*/
-                return;
+            if (line == null) {
+                synchronized (this) { // required before clearing 'reader' to avoid race with write()
+                    mpvSocket = tryClose(mpvSocket);
+                    reader = tryClose(reader);
+                }
+                return false;
             }
 					/* example messages:
 
@@ -142,16 +164,23 @@ public class MpvMediaPlayer implements MediaPlayer {
             if (positionProperty.equals(message.id)) {
                 position = (message.data == null) ? 0 : Double.parseDouble(message.data) * 1000;
             } else if (durationProperty.equals(message.id)) {
-                duration =  (message.data == null) ? 0 : Double.parseDouble(message.data) * 1000;
+                duration = (message.data == null) ? 0 : Double.parseDouble(message.data) * 1000;
+            } else if (pausedProperty.equals(message.id)) {
+                paused = message.data.equals("yes");
             } else {
                 System.err.println(line);
-                return;
+                return true;
             }
 
-            changeListener.playing(
-                            Instant.now().minusMillis((long) position),
-                            duration);
+            if (paused) {
+                changeListener.paused(position);
+            } else {
+                changeListener.playing(
+                        Instant.now().minusMillis((long) position),
+                        duration);
+            }
 
+            return true;
         }
 
         void close() {
@@ -160,93 +189,64 @@ public class MpvMediaPlayer implements MediaPlayer {
             reader = null;
         }
 
-        void reconnect() throws IOException {
-            RuntimeException lastError = null;
-            int tries = 0;
-            while (tries < 5) {
-                try {
-                    close();
-
-                    mpvSocket = openMpvSocketConnection();
-                    reader = openReader(mpvSocket);
-                    init();
-                    return;
-                } catch (IOException e) {
-                    tries++;
-                    lastError = new RuntimeException(e);
-                    System.err.println("Socket re-connection attempt " + tries + " failed with " + e);
-                    Uninterruptibles.sleepUninterruptibly(Duration.ofMillis(500));
-                }
+        private synchronized void write(String string) throws IOException {
+            SocketChannel copy = mpvSocket;
+            if (copy != null) {
+                System.err.println("> " + string);
+                mpvSocket.write(ByteBuffer.wrap((string + "\n").getBytes(StandardCharsets.UTF_8)));
             }
-            System.err.println("Giving up re-connection after " + tries + " attempts");
-            throw lastError;
-        }
-
-        private void write(String string) throws IOException {
-            System.err.println("> "+ string);
-            mpvSocket.write(ByteBuffer.wrap((string + "\n").getBytes(StandardCharsets.UTF_8)));
         }
     }
 
-    private static SocketChannel openMpvSocketConnection() {
-        RuntimeException lastError = null;
-        int tries = 0;
-        while (tries < 5) {
-            try {
-                return SocketChannel.open(UnixDomainSocketAddress.of(SOCKET));
-            } catch (IOException e) {
-                tries++;
-                lastError = new RuntimeException(e);
-                System.err.println("Socket connection attempt " + tries +" failed with "+ e);
-                Uninterruptibles.sleepUninterruptibly(Duration.ofMillis(500));
-            }
-        }
-        System.err.println("Giving up connection after "+ tries +" attempts");
-        throw lastError;
+    private static SocketChannel openMpvSocketConnection() throws IOException {
+        return SocketChannel.open(UnixDomainSocketAddress.of(SOCKET));
     }
 
-    private void startStatusThread() {
+    private void startStatusThread(Process mpvProcess) {
+        var client = new SocketClient(mpvProcess);
+        this.mpvClient = Optional.of(client);
         new Thread(() -> {
-            SocketClient client = new SocketClient();
             try {
                 client.init();
-                mpvClient = Optional.of(client);
-                while (isRunning()) {
-                    client.poll();
+                while (mpvProcess.isAlive()) {
+                    boolean ok;
+                    if (client.isConnected()) {
+                        ok = client.poll();
+                    } else {
+                        ok = client.tryConnecting();
+                    }
+                    if (!ok) {
+                        // either lost connection (probably mpv is shutting down)
+                        // or could not connect (probably mpv is starting up): wait a bit and try again
+                        Uninterruptibles.sleepUninterruptibly(Duration.ofMillis(500));
+                    }
                 }
             } catch (IOException e) {
                 e.printStackTrace();
             } finally {
                 client.close();
                 mpvClient = Optional.empty();
+                changeListener.stopped();
             }
         }).start();
     }
 
-    private synchronized boolean isRunning() {
-        return mpvProcess.isPresent();
-    }
-
-    private interface ThrowingProcessConsumer {
-        void accept(SocketClient socketClient) throws IOException;
+    private boolean isRunning() {
+        return mpvClient.isPresent();
     }
 
     /**
      * Pass the MPV Process, if available, to the given consumer.
      */
-    private void ifRunning(ThrowingProcessConsumer consumer) {
-        Optional<SocketClient> copy;
-        synchronized (this) {
-            copy = this.mpvClient;
-        }
+    private void trySendMessage(String message) {
+        Optional<SocketClient> copy = this.mpvClient;
         if (copy.isPresent()) {
             try {
-                consumer.accept(copy.get());
+                copy.get().write(message);
             } catch (IOException e) {
                 // Would this happen if mpv has just finished? In that case maybe we should resend the command
-                // To the next instance from the queue (if any)? E.g. clicking "pause" or "stop" between two runs
-                // should probably pause/stop the newly started instance instead of crashing / doing nothing.
-                throw new RuntimeException();
+                // To the next instance from the queue (if any)? E.g. clicking "pause" between two runs
+                // should probably pause the newly started instance instead of crashing / doing nothing.
             }
         }
     }
@@ -255,13 +255,15 @@ public class MpvMediaPlayer implements MediaPlayer {
         return new BufferedReader(Channels.newReader(channel, StandardCharsets.UTF_8));
     }
 
-    private void tryClose(AutoCloseable r) {
+    private static <T extends Closeable> T tryClose(T resource) {
         try {
-            if (r != null) {
-                r.close();
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
+            if (resource != null) {
+                resource.close();
+            } // else: resource was already closed, so do nothing
+        } catch (IOException e) {
+            // ignore
         }
+        return null;
     }
+
 }

@@ -101,8 +101,9 @@ public class MServerController extends AbstractController {
 				// this could be done by wrapping them together with the executor.
 				executor.execute(() -> {
 					if (!queue.isEmpty()) {
-						var item = queue.remove(0);
-						mediaPlayer.playIfIdle(item.file, () -> {
+						Item item = queue.remove(0);
+						playNow(item,
+								() -> {
 							// oops: apparently the player started playing something already:
 							// let's put the file back into the queue
 							queue.add(0, item);
@@ -110,6 +111,7 @@ public class MServerController extends AbstractController {
 					} else {
 						shuffleOne().ifPresentOrElse(file ->
 								mediaPlayer.playIfIdle(file,
+										() -> {},
 										() -> {
 											// ignore: if player is already playing something
 											// we don't need to add shuffled items
@@ -143,8 +145,6 @@ public class MServerController extends AbstractController {
 					if (s.getGlobalState() instanceof PlayingGlobalState gs) {
 						s.setGlobalState(
 								new PausedGlobalState(position, gs.duration()));
-					} else {
-						throw new IllegalStateException(s.getGlobalState().toString()); // not nice
 					}
 				});
 			}
@@ -158,14 +158,12 @@ public class MServerController extends AbstractController {
 				playNow(item, () -> {
 					queue.add(item);
 					System.out.println("Queued " + item);
-					var notifications = store.update(session -> {
+					updateStore(session -> {
 						session.setFileState(ancestors(item.file),
 								pointer -> store.isNowPlaying(pointer) ?
 										DirectoryPage.PLAY_STATE_FUNCTION.apply(
 												store.getGlobalState().getClass()) : PlayState.QUEUED);
 					});
-
-					broadcastState(notifications);
 				});
 			});
 			return "ok";
@@ -229,20 +227,20 @@ public class MServerController extends AbstractController {
 	}
 
 	private void playNow(Item item, Runnable queue) {
-		mediaPlayer.playIfIdle(item.file, queue);
+		mediaPlayer.playIfIdle(item.file, () -> {
+			updateStore(s -> {
+				Optional<File> playingBefore = s.getNowPlaying();
+				s.setNowPlaying(item.file);
 
-		updateStore(s -> {
-			Optional<File> playingBefore = s.getNowPlaying();
-			s.setNowPlaying(item.file);
+				// see if we need to remove "playing" status of oldState
+				playingBefore.ifPresent(toRemove ->
+						s.setFileState(ancestors(toRemove),
+								pointer -> isQueued(pointer) ? PlayState.QUEUED : PlayState.STOPPED));
+				s.setFileState(ancestors(item.file), PlayState.PLAYING);
 
-			// see if we need to remove "playing" status of oldState
-			playingBefore.ifPresent(toRemove ->
-				s.setFileState(ancestors(toRemove),
-						pointer -> isQueued(pointer) ? PlayState.QUEUED : PlayState.STOPPED));
-			s.setFileState(ancestors(item.file), PlayState.PLAYING);
-
-			s.setGlobalState(new PlayingGlobalState(Instant.now(), 0));
-		});
+				s.setGlobalState(new PlayingGlobalState(Instant.now(), 0));
+			});
+		}, queue);
 	}
 
 	/**
